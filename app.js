@@ -11,6 +11,7 @@
   const DEFAULT_DRIVERS = ['ANGELO', 'GENILSON', 'ELIVALDO', 'JUCIE', 'SIDNEI', 'CLEITON', 'EDVALDO', 'CARLEUSON'];
   const DEFAULT_FLEETS = ['FROTA-17', 'FROTA-19', 'REBOCADOR'];
   const LOTS_KEY = 'byd_active_lots_v1';
+  const LOCAL_LOTS_KEY = 'byd_lotes';
   const UI_CONFIG_KEY = 'byd_ui_governance_v1';
   const SELECTED_LOT_KEY = 'byd_selected_lot_v1';
   const el = (id) => document.getElementById(id);
@@ -20,7 +21,38 @@
     try { return JSON.parse(localStorage.getItem(key) || 'null') || fallback; }
     catch (_) { return fallback; }
   };
-
+  function normalizeLotRow(lot) {
+    const source = lot || {};
+    return {
+      id: source.ID_Lote || source.id || '',
+      name: String(source.Nome_Lote || source.name || '').trim(),
+      model: String(source.Modelo_Base || source.model || '').trim(),
+      createdAt: source.Data_Criacao || source.createdAt || '',
+      shift: source.Turno_Vinculado || source.shift || '',
+      Ativo: String(source.Ativo || 'SIM').trim().toUpperCase()
+    };
+  }
+  function isActiveLot(lot) {
+    return !['NAO', 'INATIVO', 'FALSE', '0'].includes(String(lot.Ativo || 'SIM').toUpperCase());
+  }
+  function sameLot(left, right) {
+    if (left.id && right.id && String(left.id) === String(right.id)) return true;
+    return left.name.toLocaleLowerCase('pt-BR') === right.name.toLocaleLowerCase('pt-BR') &&
+      normalizeModelKey(left.model) === normalizeModelKey(right.model);
+  }
+  function mergeLotCollections(remoteRows, localRows) {
+    const remote = remoteRows.map(normalizeLotRow);
+    const merged = remote.filter(isActiveLot).map(({ Ativo, ...lot }) => lot);
+    localRows.map(normalizeLotRow).forEach((lot) => {
+      if (!lot.name || !lot.model || !isActiveLot(lot)) return;
+      if (!remote.some((remoteLot) => sameLot(remoteLot, lot)) &&
+          !merged.some((existingLot) => sameLot(existingLot, lot))) {
+        const { Ativo, ...activeLot } = lot;
+        merged.push(activeLot);
+      }
+    });
+    return merged;
+  }
   let CATALOG = cloneCatalog(DEFAULT_CATALOG);
   let uiConfig = {
     coordinator: 'Anderson Andrade',
@@ -30,7 +62,11 @@
   };
   let session = null;
   let SESSAO = null;
-  let activeLots = safeJson(LOTS_KEY, []);
+  let activeLots = mergeLotCollections([], [
+    ...safeJson(LOTS_KEY, []),
+    ...safeJson(LOCAL_LOTS_KEY, []),
+    ...safeJson('Cadastro_Lista_Lotes', [])
+  ]);
   if (!Array.isArray(activeLots)) activeLots = [];
   let lotProgress = safeJson('Progresso_Lotes', []);
   if (!Array.isArray(lotProgress)) lotProgress = [];
@@ -300,27 +336,19 @@
     session = DB.getSession() || session;
     SESSAO = session;
     if (Array.isArray(snapshot.TB_Apontamentos)) records = snapshot.TB_Apontamentos;
+    if (Array.isArray(snapshot.Cadastro_Modelos)) applyModels(snapshot.Cadastro_Modelos);
     if (Array.isArray(snapshot.Cadastro_Lista_Lotes)) {
-      activeLots = snapshot.Cadastro_Lista_Lotes.filter((lot) =>
-        String(lot.Ativo || 'SIM').toUpperCase() === 'SIM'
-      ).map((lot) => ({
-        id: lot.ID_Lote || lot.id,
-        name: lot.Nome_Lote || lot.name,
-        model: lot.Modelo_Base || lot.model,
-        createdAt: lot.Data_Criacao || lot.createdAt,
-        shift: lot.Turno_Vinculado || lot.shift
-      }));
+      activeLots = mergeLotCollections(snapshot.Cadastro_Lista_Lotes, activeLots);
       persistLots();
     } else {
       activeLots = readCachedLots();
     }
     if (Array.isArray(snapshot.Progresso_Lotes) && snapshot.Progresso_Lotes.length) {
-      lotProgress = snapshot.Progresso_Lotes;
+      lotProgress = mergeSnapshotProgress(snapshot.Progresso_Lotes);
     } else {
       lotProgress = deriveLocalProgress();
     }
     localStorage.setItem('Progresso_Lotes', JSON.stringify(lotProgress));
-    if (Array.isArray(snapshot.Cadastro_Modelos)) applyModels(snapshot.Cadastro_Modelos);
     if (Array.isArray(snapshot.Config_Usuarios)) adminUsers = visibleUsers(snapshot.Config_Usuarios);
     else if (canOpenAdminViews()) adminUsers = offlineUsers();
     adminDataOffline = Boolean(snapshot.offline);
@@ -330,17 +358,11 @@
   }
 
   function readCachedLots() {
-    const cached = safeJson('Cadastro_Lista_Lotes', []);
-    if (Array.isArray(cached) && cached.length) {
-      return cached.filter((lot) => String(lot.Ativo || 'SIM').toUpperCase() === 'SIM').map((lot) => ({
-        id: lot.ID_Lote || lot.id,
-        name: lot.Nome_Lote || lot.name,
-        model: lot.Modelo_Base || lot.model,
-        createdAt: lot.Data_Criacao || lot.createdAt,
-        shift: lot.Turno_Vinculado || lot.shift
-      }));
-    }
-    return safeJson(LOTS_KEY, []);
+    return mergeLotCollections([], [
+      ...safeJson('Cadastro_Lista_Lotes', []),
+      ...safeJson(LOCAL_LOTS_KEY, []),
+      ...safeJson(LOTS_KEY, [])
+    ]);
   }
 
   function persistAdminCache() {
@@ -374,10 +396,94 @@
       }));
       const total = Number(item.Total_Meta);
       if (components.some((component) => !component.name || !Number.isInteger(component.meta) || component.meta < 0)) return;
-      if (!Number.isInteger(total) || total < 0) return;
+      if (!Number.isInteger(total) || total <= 0) return;
       next[key] = { total, components };
     });
     CATALOG = next;
+  }
+
+  function normalizeProgressMeta(progress) {
+    const model = normalizeModelKey(progress.Modelo_Base);
+    const definition = CATALOG[model];
+    const existingItems = Array.isArray(progress.Itens) ? progress.Itens : [];
+    const sentByComponent = new Map(existingItems.map((item) => [
+      String(item.Componente || '').trim().toLocaleLowerCase('pt-BR'),
+      Number(item.Enviado) || 0
+    ]));
+    const sentFromItems = existingItems.reduce((sum, item) => sum + (Number(item.Enviado) || 0), 0);
+    const sent = Math.max(Number(progress.Total_Enviado) || 0, sentFromItems);
+    if (Number(progress.Total_Meta) > 0) {
+      const total = Number(progress.Total_Meta);
+      const items = existingItems.map((item) => ({
+        ...item,
+        Saldo: Math.max(0, (Number(item.Meta) || 0) - (Number(item.Enviado) || 0))
+      }));
+      return {
+        ...progress,
+        Itens: items,
+        Total_Enviado: sent,
+        Total_Saldo: Math.max(0, total - sent),
+        Concluido: sent >= total
+      };
+    }
+    if (!definition || definition.total <= 0) {
+      return { ...progress, Total_Meta: 0, Total_Enviado: sent, Concluido: false };
+    }
+    const items = definition.components.map((component) => {
+      const enviado = sentByComponent.get(component.name.toLocaleLowerCase('pt-BR')) || 0;
+      return {
+        Componente: component.name,
+        Meta: component.meta,
+        Enviado: enviado,
+        Saldo: Math.max(0, component.meta - enviado)
+      };
+    });
+    return {
+      ...progress,
+      Itens: items,
+      Total_Meta: definition.total,
+      Total_Enviado: sent,
+      Total_Saldo: Math.max(0, definition.total - sent),
+      Concluido: sent >= definition.total
+    };
+  }
+
+  function progressKey(progress) {
+    return `${normalizeModelKey(progress.Modelo_Base)}|${String(progress.Nome_Lote || '').trim().toLocaleLowerCase('pt-BR')}`;
+  }
+
+  function mergeSnapshotProgress(remoteRows) {
+    const remote = remoteRows.map(normalizeProgressMeta);
+    const derived = deriveLocalProgress().map(normalizeProgressMeta);
+    const activeKeys = new Set(activeLots.map((lot) =>
+      `${normalizeModelKey(lot.model)}|${String(lot.name || '').trim().toLocaleLowerCase('pt-BR')}`
+    ));
+    const pendingIds = new Set();
+    DB.getQueue().forEach((item) => {
+      if (Array.isArray(item.itens)) {
+        item.itens.forEach((record) => {
+          if (record.ID_Apontamento) pendingIds.add(String(record.ID_Apontamento));
+        });
+      } else if (item.ID_Apontamento) {
+        pendingIds.add(String(item.ID_Apontamento));
+      }
+    });
+    const pendingKeys = new Set(records.filter((record) => pendingIds.has(String(record.ID_Apontamento)))
+      .map((record) => `${normalizeModelKey(record.Modelo_Base)}|${String(record.Nome_Lote || '').trim().toLocaleLowerCase('pt-BR')}`));
+    const derivedByKey = new Map(derived.map((progress) => [progressKey(progress), progress]));
+    const merged = remote.map((progress) => {
+      const key = progressKey(progress);
+      return pendingKeys.has(key) ? derivedByKey.get(key) || progress : progress;
+    });
+    const mergedKeys = new Set(merged.map(progressKey));
+    derived.forEach((progress) => {
+      const key = progressKey(progress);
+      if (!mergedKeys.has(key) && (activeKeys.has(key) || pendingKeys.has(key))) {
+        merged.push(progress);
+        mergedKeys.add(key);
+      }
+    });
+    return merged;
   }
 
   function deriveLocalProgress() {
@@ -418,7 +524,7 @@
       progress.Total_Meta = progress.Itens.reduce((sum, item) => sum + item.Meta, 0);
       progress.Total_Enviado = progress.Itens.reduce((sum, item) => sum + item.Enviado, 0);
       progress.Total_Saldo = progress.Itens.reduce((sum, item) => sum + item.Saldo, 0);
-      progress.Concluido = progress.Total_Meta > 0 && progress.Total_Saldo === 0;
+      progress.Concluido = progress.Total_Meta > 0 && progress.Total_Enviado >= progress.Total_Meta;
       return progress;
     });
   }
@@ -428,15 +534,17 @@
   }
 
   function persistLots() {
-    localStorage.setItem(LOTS_KEY, JSON.stringify(activeLots));
-    localStorage.setItem('Cadastro_Lista_Lotes', JSON.stringify(activeLots.map((lot) => ({
+    const rows = activeLots.map((lot) => ({
       ID_Lote: lot.id,
       Nome_Lote: lot.name,
       Modelo_Base: lot.model,
       Turno_Vinculado: /^Turno\s+/i.test(lot.shift || '') ? lot.shift : `Turno ${lot.shift || 'A'}`,
-      Ativo: 'SIM',
+      Ativo: 'ATIVO',
       Data_Criacao: lot.createdAt
-    }))));
+    }));
+    localStorage.setItem(LOTS_KEY, JSON.stringify(activeLots));
+    localStorage.setItem(LOCAL_LOTS_KEY, JSON.stringify(rows));
+    localStorage.setItem('Cadastro_Lista_Lotes', JSON.stringify(rows));
   }
 
   function mergeExistingLots(progressRows) {
@@ -444,7 +552,7 @@
     progressRows.forEach((progress) => {
       const model = normalizeModelKey(progress.Modelo_Base);
       const name = String(progress.Nome_Lote || '').trim();
-      if (!model || !name || progress.Concluido) return;
+      if (!model || !name || progressIsComplete(progress)) return;
       const exists = activeLots.some((lot) =>
         lot.name.toLocaleLowerCase('pt-BR') === name.toLocaleLowerCase('pt-BR') &&
         normalizeModelKey(lot.model) === model
@@ -527,11 +635,36 @@
 
   function lotIsComplete(lot) {
     const progress = lotProgressFor(lot);
-    if (progress) return Boolean(progress.Concluido) || Number(progress.Total_Saldo) <= 0;
-    const components = CATALOG[normalizeModelKey(lot.model)]?.components || [];
-    return components.length > 0 && components.every((component) =>
-      component.meta - sentForLotComponent(lot, component.name) <= 0
+    const total = progress && Number(progress.Total_Meta) > 0
+      ? Number(progress.Total_Meta)
+      : Number(CATALOG[normalizeModelKey(lot.model)]?.total) || 0;
+    if (total <= 0) return false;
+    const itemSent = progress && Array.isArray(progress.Itens)
+      ? progress.Itens.reduce((sum, item) => sum + (Number(item.Enviado) || 0), 0)
+      : 0;
+    const sent = Math.max(
+      progress ? Number(progress.Total_Enviado) || 0 : 0,
+      itemSent,
+      progress ? 0 : records.reduce((sum, record) => {
+        const sameLot = String(record.Nome_Lote || '').trim().toLocaleLowerCase('pt-BR') ===
+          String(lot.name || '').trim().toLocaleLowerCase('pt-BR');
+        const sameModel = normalizeModelKey(record.Modelo_Base) === normalizeModelKey(lot.model);
+        return sum + (sameLot && sameModel && record.Status !== 'ESTORNADO' ? Number(record.Qtd_Enviada) || 0 : 0);
+      }, 0)
     );
+    return sent >= total;
+  }
+
+  function progressIsComplete(progress) {
+    const model = normalizeModelKey(progress.Modelo_Base);
+    const total = Number(progress.Total_Meta) > 0
+      ? Number(progress.Total_Meta)
+      : Number(CATALOG[model]?.total) || 0;
+    const sentFromItems = Array.isArray(progress.Itens)
+      ? progress.Itens.reduce((sum, item) => sum + (Number(item.Enviado) || 0), 0)
+      : 0;
+    const sent = Math.max(Number(progress.Total_Enviado) || 0, sentFromItems);
+    return total > 0 && sent >= total;
   }
 
   function renderSelectedLot() {
@@ -593,9 +726,7 @@
 
   function renderPendingLots() {
     const container = el('pendingLotsList');
-    const pending = lotProgress.filter((progress) =>
-      !progress.Concluido && Number(progress.Total_Saldo) > 0
-    );
+    const pending = lotProgress.filter((progress) => !progressIsComplete(progress));
     if (!pending.length) {
       container.innerHTML = '<div class="empty-state">Nenhum lote pendente no pátio. Os lotes concluídos foram baixados automaticamente.</div>';
       return;
@@ -663,6 +794,7 @@
         shift: progress.Turno_Vinculado || currentShift()
       };
       activeLots.push(lot);
+      persistLots();
     }
     selectedLotId = lot.id;
     selectedComponent = button.dataset.component;
@@ -1075,7 +1207,7 @@
     progress.Total_Meta = progress.Itens.reduce((sum, item) => sum + Number(item.Meta || 0), 0);
     progress.Total_Enviado = progress.Itens.reduce((sum, item) => sum + Number(item.Enviado || 0), 0);
     progress.Total_Saldo = progress.Itens.reduce((sum, item) => sum + Number(item.Saldo || 0), 0);
-    progress.Concluido = progress.Total_Meta > 0 && progress.Total_Saldo === 0;
+    progress.Concluido = progress.Total_Meta > 0 && progress.Total_Enviado >= progress.Total_Meta;
     localStorage.setItem('Progresso_Lotes', JSON.stringify(lotProgress));
   }
 
@@ -1780,13 +1912,22 @@
       name, model, createdAt: new Date().toISOString(), shift: currentShift()
     };
     const payload = {
-      action: 'salvar_lote',
+      action: 'criar_lote',
       ID_Lote: lot.id,
       Nome_Lote: lot.name,
       Modelo_Base: lot.model,
       Turno_Vinculado: lot.shift,
       Data_Criacao: lot.createdAt
     };
+    activeLots.push(lot);
+    selectedLotId = lot.id;
+    selectedComponent = CATALOG[model].components[0].name;
+    quantity = 0;
+    persistLots();
+    el('batchModal').close();
+    el('batchForm').reset();
+    renderLots();
+    refreshViews();
     try {
       await DB.sendOrQueue(payload);
     } catch (error) {
@@ -1796,13 +1937,6 @@
         return;
       }
     }
-    activeLots.push(lot);
-    persistLots();
-    selectedLotId = activeLots[activeLots.length - 1].id;
-    selectedComponent = CATALOG[model].components[0].name;
-    quantity = 0;
-    el('batchModal').close();
-    el('batchForm').reset();
     renderLots();
     refreshViews();
     showToast(DB.getQueue().some((item) => item.ID_Lote === lot.id)

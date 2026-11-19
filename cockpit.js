@@ -37,7 +37,7 @@ const Cockpit = (() => {
     models.forEach((model) => {
       const key = modelKey(model.Modelo_Base);
       const total = Number(model.Total_Meta);
-      if (key && Number.isFinite(total) && total >= 0) updated[key] = { total };
+      if (key && Number.isFinite(total) && total > 0) updated[key] = { total };
     });
     if (Object.keys(updated).length) CATALOG = { ...CATALOG, ...updated };
   }
@@ -118,7 +118,7 @@ const Cockpit = (() => {
       const group = ensureGroup(progress.Nome_Lote, progress.Modelo_Base, progress.Turno_Vinculado);
       group.meta = Number(progress.Total_Meta) || group.meta;
       group.sent = Number(progress.Total_Enviado) || 0;
-      group.balance = Number(progress.Total_Saldo) || 0;
+      group.balance = Math.max(0, group.meta - group.sent);
       group.movedToday = Boolean(progress.MovidoHoje);
       if (group.balance > 0 || group.movedToday) group.continuityVisible = true;
     });
@@ -136,18 +136,30 @@ const Cockpit = (() => {
     lots.forEach((lot) => {
       if (lot.balance === 0 && !lot.continuityVisible) lot.balance = Math.max(0, lot.meta - lot.sent);
       lot.percent = lot.meta > 0 ? Math.min(100, (lot.sent / lot.meta) * 100) : 0;
-      lot.completed = lot.meta > 0 && lot.balance === 0;
+      lot.completed = lot.meta > 0 && lot.sent >= lot.meta;
     });
 
     const totalPlanned = [...plannedKeys].reduce((sum, key) => sum + (groups.get(key)?.meta || 0), 0);
     const totalSent = activeRecords.reduce((sum, record) => sum + (Number(record.Qtd_Enviada) || 0), 0);
     const progressRows = Array.isArray(context.progressLots) ? context.progressLots : [];
     const totalBalance = progressRows.length
-      ? progressRows.reduce((sum, lot) => sum + (Number(lot.Total_Saldo) || 0), 0)
+      ? progressRows.reduce((sum, lot) => {
+        const meta = Number(lot.Total_Meta) > 0
+          ? Number(lot.Total_Meta)
+          : Number(CATALOG[modelKey(lot.Modelo_Base)]?.total) || 0;
+        const sent = Number(lot.Total_Enviado) || 0;
+        return sum + Math.max(0, meta - sent);
+      }, 0)
       : Math.max(0, totalPlanned - totalSent);
     const completed = lots.filter((lot) => lot.completed).length;
     const pendingLots = progressRows.length
-      ? progressRows.filter((lot) => !lot.Concluido && Number(lot.Total_Saldo) > 0).length
+      ? progressRows.filter((lot) => {
+        const meta = Number(lot.Total_Meta) > 0
+          ? Number(lot.Total_Meta)
+          : Number(CATALOG[modelKey(lot.Modelo_Base)]?.total) || 0;
+        const sent = Number(lot.Total_Enviado) || 0;
+        return !(meta > 0 && sent >= meta);
+      }).length
       : lots.filter((lot) => lot.balance > 0).length;
     const progress = totalPlanned > 0 ? Math.min(100, (totalSent / totalPlanned) * 100) : 0;
     const activeHours = new Set();
@@ -304,7 +316,19 @@ const Cockpit = (() => {
         width: report.scrollWidth,
         windowWidth: Math.max(document.documentElement.clientWidth, report.scrollWidth),
         scrollX: 0,
-        scrollY: 0
+        scrollY: 0,
+        onclone: (clonedDocument) => {
+          clonedDocument.querySelectorAll(
+            '.governance-pill, .governance-pill .governance-label, .governance-pill .governance-value, .report-status.done, .report-status.running'
+          ).forEach((element) => {
+            element.style.setProperty('overflow', 'visible', 'important');
+            element.style.setProperty('line-height', '1.4', 'important');
+          });
+          clonedDocument.querySelectorAll('.governance-value').forEach((element) => {
+            element.style.setProperty('white-space', 'normal', 'important');
+            element.style.setProperty('text-overflow', 'clip', 'important');
+          });
+        }
       });
       const blob = await canvasToBlob(canvas);
       const date = localDateRef().replace(/-/g, '');

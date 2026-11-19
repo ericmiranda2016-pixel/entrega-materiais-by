@@ -8,6 +8,8 @@ const DB = (() => {
   const USER_CACHE_KEY = 'Config_Usuarios';
   const MODEL_CACHE_KEY = 'Cadastro_Modelos';
   const LOT_CACHE_KEY = 'Cadastro_Lista_Lotes';
+  const LOCAL_LOTS_KEY = 'byd_lotes';
+  const LEGACY_LOTS_KEY = 'byd_active_lots_v1';
   const RECORD_CACHE_KEY = 'TB_Apontamentos';
   const LOT_PROGRESS_KEY = 'Progresso_Lotes';
   const LEGACY_SESSION_KEY = 'byd_authenticated_session_v1';
@@ -52,6 +54,91 @@ const DB = (() => {
 
   function getQueue() {
     return readArray(QUEUE_KEY, []);
+  }
+
+  function normalizeLotRow(lot) {
+    const source = lot || {};
+    return {
+      ...source,
+      ID_Lote: String(source.ID_Lote || source.id || ''),
+      Nome_Lote: String(source.Nome_Lote || source.name || '').trim(),
+      Modelo_Base: String(source.Modelo_Base || source.model || '').trim(),
+      Turno_Vinculado: source.Turno_Vinculado || source.shift || '',
+      Ativo: String(source.Ativo || 'SIM').trim().toUpperCase(),
+      Data_Criacao: source.Data_Criacao || source.createdAt || ''
+    };
+  }
+
+  function isActiveLot(lot) {
+    return !['NAO', 'INATIVO', 'FALSE', '0'].includes(String(lot.Ativo || 'SIM').toUpperCase());
+  }
+
+  function sameLot(left, right) {
+    if (left.ID_Lote && right.ID_Lote && left.ID_Lote === right.ID_Lote) return true;
+    return left.Nome_Lote.toLocaleLowerCase('pt-BR') === right.Nome_Lote.toLocaleLowerCase('pt-BR') &&
+      left.Modelo_Base.toUpperCase() === right.Modelo_Base.toUpperCase();
+  }
+
+  function queuedLots(queue) {
+    return queue.filter((item) => ['salvar_lote', 'criar_lote'].includes(item.action))
+      .map((item) => normalizeLotRow({ ...item, Ativo: item.Ativo || 'ATIVO' }));
+  }
+
+  function mergeLotRows(remoteLots, localLots, queue) {
+    const merged = remoteLots.map(normalizeLotRow);
+    const localCandidates = localLots.concat(queuedLots(queue)).map(normalizeLotRow);
+    localCandidates.forEach((lot) => {
+      if (!lot.Nome_Lote || !lot.Modelo_Base || !isActiveLot(lot)) return;
+      if (!merged.some((remoteLot) => sameLot(remoteLot, lot))) merged.push(lot);
+    });
+    return merged;
+  }
+
+  function cleanQueuedRecord(record) {
+    const { action, _queuedBy, _sessionToken, ...fields } = record;
+    return fields;
+  }
+
+  function mergePendingRecords(remoteRecords, localRecords, queue) {
+    const merged = remoteRecords.slice();
+    const indexById = new Map();
+    const cachedById = new Map();
+    localRecords.forEach((record) => {
+      if (record.ID_Apontamento) cachedById.set(String(record.ID_Apontamento), record);
+    });
+    merged.forEach((record, index) => {
+      if (record.ID_Apontamento) indexById.set(String(record.ID_Apontamento), index);
+    });
+
+    function applyPendingRecord(record, update) {
+      if (!record || !record.ID_Apontamento) return;
+      const id = String(record.ID_Apontamento);
+      const cached = cachedById.get(id);
+      const index = indexById.get(id);
+      const serverRecord = index === undefined ? null : merged[index];
+      const candidate = update
+        ? { ...(serverRecord || {}), ...(cached || {}), ...record }
+        : cached || record;
+      if (index === undefined) {
+        indexById.set(id, merged.length);
+        merged.push(candidate);
+      } else {
+        merged[index] = { ...serverRecord, ...candidate };
+      }
+    }
+
+    queue.forEach((item) => {
+      if (item.action === 'criar_viagem' && Array.isArray(item.itens)) {
+        item.itens.forEach((record) => applyPendingRecord(record, false));
+      } else if (['salvar_apontamento', 'criar_apontamento'].includes(item.action)) {
+        applyPendingRecord(cleanQueuedRecord(item), false);
+      } else if (item.action === 'editar_apontamento') {
+        applyPendingRecord(cleanQueuedRecord(item), true);
+      } else if (item.action === 'reverse') {
+        applyPendingRecord(cleanQueuedRecord(item), true);
+      }
+    });
+    return merged;
   }
 
   function setQueue(queue) {
@@ -355,6 +442,7 @@ const DB = (() => {
 
   function persistSnapshot(snapshot) {
     if (!snapshot || typeof snapshot !== 'object') return;
+    const queue = getQueue();
     if (Array.isArray(snapshot.Config_Usuarios)) {
       localStorage.setItem(USER_CACHE_KEY, JSON.stringify(snapshot.Config_Usuarios));
     }
@@ -362,12 +450,19 @@ const DB = (() => {
       localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(snapshot.Cadastro_Modelos));
     }
     if (Array.isArray(snapshot.Cadastro_Lista_Lotes)) {
+      const localLots = readArray(LOCAL_LOTS_KEY, [])
+        .concat(readArray(LOT_CACHE_KEY, []), readArray(LEGACY_LOTS_KEY, []));
+      snapshot.Cadastro_Lista_Lotes = mergeLotRows(snapshot.Cadastro_Lista_Lotes, localLots, queue);
       localStorage.setItem(LOT_CACHE_KEY, JSON.stringify(snapshot.Cadastro_Lista_Lotes));
+      localStorage.setItem(LOCAL_LOTS_KEY, JSON.stringify(snapshot.Cadastro_Lista_Lotes));
     }
     if (Array.isArray(snapshot.Progresso_Lotes)) {
       localStorage.setItem(LOT_PROGRESS_KEY, JSON.stringify(snapshot.Progresso_Lotes));
     }
-    if (Array.isArray(snapshot.TB_Apontamentos)) setCache(snapshot.TB_Apontamentos);
+    if (Array.isArray(snapshot.TB_Apontamentos)) {
+      snapshot.TB_Apontamentos = mergePendingRecords(snapshot.TB_Apontamentos, getCache(), queue);
+      setCache(snapshot.TB_Apontamentos);
+    }
     if (snapshot.Sessao) {
       const current = getSession();
       if (current) {
@@ -386,11 +481,16 @@ const DB = (() => {
     }
     const url = authenticatedUrl('sync_read');
     if (!url) {
+      const queue = getQueue();
       const cached = {
         Cadastro_Modelos: readArray(MODEL_CACHE_KEY, []),
-        Cadastro_Lista_Lotes: readArray(LOT_CACHE_KEY, []),
+        Cadastro_Lista_Lotes: mergeLotRows(
+          readArray(LOT_CACHE_KEY, []),
+          readArray(LOCAL_LOTS_KEY, []).concat(readArray(LEGACY_LOTS_KEY, [])),
+          queue
+        ),
         Progresso_Lotes: readArray(LOT_PROGRESS_KEY, []),
-        TB_Apontamentos: getCache(),
+        TB_Apontamentos: mergePendingRecords(getCache(), getCache(), queue),
         offline: true
       };
       const session = getSession();
