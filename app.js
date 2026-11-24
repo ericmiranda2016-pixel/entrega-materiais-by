@@ -21,6 +21,7 @@
     try { return JSON.parse(localStorage.getItem(key) || 'null') || fallback; }
     catch (_) { return fallback; }
   };
+
   function normalizeLotRow(lot) {
     const source = lot || {};
     return {
@@ -28,31 +29,54 @@
       name: String(source.Nome_Lote || source.name || '').trim(),
       model: String(source.Modelo_Base || source.model || '').trim(),
       createdAt: source.Data_Criacao || source.createdAt || '',
+      createdLocalAt: Number(source.createdLocalAt) || 0,
       shift: source.Turno_Vinculado || source.shift || '',
       Ativo: String(source.Ativo || 'SIM').trim().toUpperCase()
     };
   }
+
   function isActiveLot(lot) {
-    return !['NAO', 'INATIVO', 'FALSE', '0'].includes(String(lot.Ativo || 'SIM').toUpperCase());
+    return !['NAO', 'NÃO', 'INATIVO', 'FALSE', '0'].includes(String(lot.Ativo || 'SIM').toUpperCase());
   }
+
   function sameLot(left, right) {
     if (left.id && right.id && String(left.id) === String(right.id)) return true;
     return left.name.toLocaleLowerCase('pt-BR') === right.name.toLocaleLowerCase('pt-BR') &&
       normalizeModelKey(left.model) === normalizeModelKey(right.model);
   }
-  function mergeLotCollections(remoteRows, localRows) {
+
+  function isLotQueuedLocally(lot) {
+    try {
+      return DB.getQueue().some((item) =>
+        item.action === 'criar_lote' && (
+          (lot.id && item.ID_Lote === lot.id) ||
+          (String(item.Nome_Lote || '').trim().toLocaleLowerCase('pt-BR') === lot.name.toLocaleLowerCase('pt-BR') &&
+           normalizeModelKey(item.Modelo_Base) === normalizeModelKey(lot.model))
+        )
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function mergeLotCollections(remoteRows, localRows, authoritativeRemote = false) {
     const remote = remoteRows.map(normalizeLotRow);
     const merged = remote.filter(isActiveLot).map(({ Ativo, ...lot }) => lot);
+    const now = Date.now();
     localRows.map(normalizeLotRow).forEach((lot) => {
       if (!lot.name || !lot.model || !isActiveLot(lot)) return;
-      if (!remote.some((remoteLot) => sameLot(remoteLot, lot)) &&
-          !merged.some((existingLot) => sameLot(existingLot, lot))) {
-        const { Ativo, ...activeLot } = lot;
-        merged.push(activeLot);
+      if (remote.some((remoteLot) => sameLot(remoteLot, lot))) return;
+      if (merged.some((existingLot) => sameLot(existingLot, lot))) return;
+      if (authoritativeRemote) {
+        const isRecentLocal = lot.createdLocalAt > 0 && (now - lot.createdLocalAt) < 45000;
+        if (!isRecentLocal && !isLotQueuedLocally(lot)) return;
       }
+      const { Ativo, ...activeLot } = lot;
+      merged.push(activeLot);
     });
     return merged;
   }
+
   let CATALOG = cloneCatalog(DEFAULT_CATALOG);
   let uiConfig = {
     coordinator: 'Anderson Andrade',
@@ -337,8 +361,9 @@
     SESSAO = session;
     if (Array.isArray(snapshot.TB_Apontamentos)) records = snapshot.TB_Apontamentos;
     if (Array.isArray(snapshot.Cadastro_Modelos)) applyModels(snapshot.Cadastro_Modelos);
+    const hasAuthoritativeLots = !snapshot.offline && Array.isArray(snapshot.Cadastro_Lista_Lotes);
     if (Array.isArray(snapshot.Cadastro_Lista_Lotes)) {
-      activeLots = mergeLotCollections(snapshot.Cadastro_Lista_Lotes, activeLots);
+      activeLots = mergeLotCollections(snapshot.Cadastro_Lista_Lotes, activeLots, hasAuthoritativeLots);
       persistLots();
     } else {
       activeLots = readCachedLots();
@@ -348,12 +373,18 @@
     } else {
       lotProgress = deriveLocalProgress();
     }
+    if (hasAuthoritativeLots) {
+      const allowedKeys = new Set(activeLots.map((lot) =>
+        `${normalizeModelKey(lot.model)}|${String(lot.name || '').trim().toLocaleLowerCase('pt-BR')}`
+      ));
+      lotProgress = lotProgress.filter((progress) => allowedKeys.has(progressKey(progress)));
+    }
     localStorage.setItem('Progresso_Lotes', JSON.stringify(lotProgress));
     if (Array.isArray(snapshot.Config_Usuarios)) adminUsers = visibleUsers(snapshot.Config_Usuarios);
     else if (canOpenAdminViews()) adminUsers = offlineUsers();
     adminDataOffline = Boolean(snapshot.offline);
     renderAccess();
-    mergeExistingLots(lotProgress);
+    if (!hasAuthoritativeLots) mergeExistingLots(lotProgress);
     renderLots();
   }
 
@@ -540,7 +571,8 @@
       Modelo_Base: lot.model,
       Turno_Vinculado: /^Turno\s+/i.test(lot.shift || '') ? lot.shift : `Turno ${lot.shift || 'A'}`,
       Ativo: 'ATIVO',
-      Data_Criacao: lot.createdAt
+      Data_Criacao: lot.createdAt,
+      createdLocalAt: lot.createdLocalAt || 0
     }));
     localStorage.setItem(LOTS_KEY, JSON.stringify(activeLots));
     localStorage.setItem(LOCAL_LOTS_KEY, JSON.stringify(rows));
@@ -1909,7 +1941,11 @@
     }
     const lot = {
       id: `LOT-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
-      name, model, createdAt: new Date().toISOString(), shift: currentShift()
+      name,
+      model,
+      createdAt: new Date().toISOString(),
+      createdLocalAt: Date.now(),
+      shift: currentShift()
     };
     const payload = {
       action: 'criar_lote',
