@@ -5,7 +5,7 @@ const DB = (() => {
   // 1. CONFIGURAÇÃO DO SUPABASE (TEMPO REAL < 0,3s) + ESPELHO GOOGLE SHEETS
   // =========================================================================
   const SUPABASE_URL = 'https://ywwaoyqskngbivvpxgny.supabase.co';
-  const SUPABASE_ANON_KEY = 'sb_publishable_k64sBffK4f2s6s7K9z8W9Q_24z9z9z9';
+  const SUPABASE_ANON_KEY = 'postgresql://postgres:[YOUR-DATABASE-PASSWORD]@db.nsyrvgmdkdhznexbsqwz.supabase.co:5432/postgres';
   const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbxhdG44T6jX-f7_iH1xH28Q0lT-q0y8P1B-3l2gR9s2wK60/exec';
 
   const CONFIG_KEY = 'byd_apps_script_url';
@@ -24,9 +24,9 @@ const DB = (() => {
   const LOT_PROGRESS_KEY = 'Progresso_Lotes';
 
   const FALLBACK_USERS = [
-    { Matricula: '1001', Nome: 'Anderson Andrade', PIN: '1001', Perfil: 'ADMIN_GERAL', Turno_Vinculado: 'TODOS', Ativo: 'SIM' },
-    { Matricula: '1002', Nome: 'Daniela Menezes', PIN: '1002', Perfil: 'LIDER_TURNO', Turno_Vinculado: 'Turno B', Ativo: 'SIM' },
-    { Matricula: '1003', Nome: 'Eric Miranda', PIN: '1003', Perfil: 'OPERADOR', Turno_Vinculado: 'Turno B', Ativo: 'SIM' }
+    { Matricula: '1001', Nome: 'Eric Miranda', PIN: '1234', Perfil: 'ADMIN_GERAL', Turno_Vinculado: 'TODOS', Ativo: 'SIM' },
+    { Matricula: '1002', Nome: 'Daniela Menezes', PIN: '2026', Perfil: 'LIDER_TURNO', Turno_Vinculado: 'Turno B', Ativo: 'SIM' },
+    { Matricula: '1003', Nome: 'Operador Pátio', PIN: '0000', Perfil: 'OPERADOR', Turno_Vinculado: 'Turno B', Ativo: 'SIM' }
   ];
 
   const FALLBACK_RESOURCES = [

@@ -1,396 +1,394 @@
 const Cockpit = (() => {
   'use strict';
 
-  let CATALOG = {
-    EQE: { total: 233 },
-    HA2: { total: 240 },
-    'SA2/SA6': { total: 120 },
-    SC3: { total: 120 },
-    PBP: { total: 387 }
-  };
+  let lastRecords = [];
+  let lastContext = {};
+  let listenersAttached = false;
+
   const el = (id) => document.getElementById(id);
-  const escapeHtml = (value) => String(value).replace(/[&<>"']/g,
+
+  const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g,
     (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
 
-  function localDateRef(date = new Date()) {
-    const pad = (value) => String(value).padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  function todayIso() {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   }
 
   function normalizeDate(dateValue, dateTimeValue) {
-    const raw = String(dateValue || '');
-    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    const match = String(dateValue || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
     if (match) return `${match[1]}-${match[2]}-${match[3]}`;
-    const date = new Date(dateTimeValue || dateValue);
-    return Number.isNaN(date.getTime()) ? '' : localDateRef(date);
+    const parsed = new Date(dateTimeValue || dateValue);
+    if (Number.isNaN(parsed.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`;
   }
 
-  function modelKey(model) {
-    const normalized = String(model || '').trim().toUpperCase().replace(/\s+/g, '');
-    if (normalized === 'SA2' || normalized === 'SA6' || normalized === 'SA2/SA6') return 'SA2/SA6';
-    return Object.keys(CATALOG).find((key) => key.toUpperCase() === normalized) || '';
+  function formatDateBr(isoDate) {
+    const match = String(isoDate || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return match ? `${match[3]}/${match[2]}/${match[1]}` : isoDate;
   }
 
-  function applyModels(models) {
-    if (!Array.isArray(models)) return;
-    const updated = {};
-    models.forEach((model) => {
-      const key = modelKey(model.Modelo_Base);
-      const total = Number(model.Total_Meta);
-      if (key && Number.isFinite(total) && total > 0) updated[key] = { total };
-    });
-    if (Object.keys(updated).length) CATALOG = { ...CATALOG, ...updated };
+  function formatTime(record) {
+    const raw = String(record.Hora_Ref || '').trim();
+    if (/^\d{2}:\d{2}(:\d{2})?$/.test(raw)) return raw.length === 5 ? `${raw}:00` : raw.slice(0, 8);
+    const parsed = new Date(record.DataHora);
+    if (Number.isNaN(parsed.getTime())) return '--:--:--';
+    return [parsed.getHours(), parsed.getMinutes(), parsed.getSeconds()]
+      .map((n) => String(n).padStart(2, '0')).join(':');
   }
 
-  function shiftMatches(recordShift, selectedShift) {
-    if (!selectedShift || selectedShift === 'Geral') return true;
-    return String(recordShift || '').replace(/^Turno\s+/i, '').toUpperCase() ===
-      String(selectedShift).replace(/^Turno\s+/i, '').toUpperCase();
+  function turnKey(value) {
+    return String(value || '').replace(/^Turno\s+/i, '').trim().toUpperCase();
   }
 
-  function shiftKey(value) {
-    const shift = String(value || '').replace(/^Turno\s+/i, '').toUpperCase();
-    return shift || 'A';
+  function shiftToChinese(shift) {
+    const key = turnKey(shift);
+    if (key === 'A') return 'A班 (Turno A)';
+    if (key === 'B') return 'B班 (Turno B)';
+    if (key === 'C') return 'C班 (Turno C)';
+    return '全部班次 (Todos os Turnos)';
   }
 
-  function formatDate(date) {
-    const pad = (value) => String(value).padStart(2, '0');
-    return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}`;
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(() => true).catch(() => fallbackCopy(text));
+    }
+    return Promise.resolve(fallbackCopy(text));
   }
 
-  function formatPercent(value) {
-    return `${Number(value || 0).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+  function fallbackCopy(text) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) {}
+    textarea.remove();
+    return ok;
   }
 
-  function uniqueRecords(records) {
-    const ids = new Set();
-    return records.filter((record) => {
-      const id = record.ID_Apontamento;
-      if (!id) return true;
-      if (ids.has(id)) return false;
-      ids.add(id);
-      return true;
-    });
-  }
+  function ensureControls(context) {
+    const dateInput = el('cockpitDateFilter');
+    const shiftSelect = el('cockpitShiftFilter');
+    const copyBtn = el('copyChineseReportButton');
 
-  function buildReportData(records, context) {
-    const today = localDateRef();
-    const dayRecords = uniqueRecords(records).filter((record) =>
-      normalizeDate(record.Data_Ref, record.DataHora) === today &&
-      shiftMatches(record.Turno, context.shift)
-    );
-    const activeRecords = dayRecords.filter((record) => record.Status !== 'ESTORNADO');
-    const groups = new Map();
-    const plannedKeys = new Set();
-
-    function lotKey(name, model) {
-      return `${modelKey(model) || String(model || '').toUpperCase()}|${String(name || '').trim().toLocaleLowerCase('pt-BR')}`;
+    if (dateInput && !dateInput.value) {
+      dateInput.value = todayIso();
     }
 
-    function ensureGroup(name, model, shift) {
-      const safeName = String(name || 'Lote sem identificação').trim();
-      const safeModel = modelKey(model);
-      const key = lotKey(safeName, safeModel || model);
-      if (!groups.has(key)) {
-        groups.set(key, {
-          name: safeName,
-          model: String(model || '').trim(),
-          shift: shiftKey(shift),
-          meta: safeModel ? CATALOG[safeModel].total : 0,
-          sent: 0,
-          balance: 0,
-          movedToday: false
+    if (shiftSelect) {
+      const isLeader = String(context.profile || '').toUpperCase() === 'LIDER_TURNO';
+      if (isLeader && context.shift && context.shift !== 'Geral') {
+        shiftSelect.value = context.shift;
+        shiftSelect.disabled = true;
+      } else {
+        shiftSelect.disabled = false;
+      }
+    }
+
+    if (!listenersAttached) {
+      listenersAttached = true;
+      if (dateInput) dateInput.addEventListener('change', () => render());
+      if (shiftSelect) shiftSelect.addEventListener('change', () => render());
+      if (copyBtn) {
+        copyBtn.addEventListener('click', async () => {
+          const box = el('cockpitBilingualCard');
+          if (!box || !box.textContent.trim()) return;
+          const copied = await copyText(box.textContent);
+          const originalLabel = copyBtn.textContent;
+          copyBtn.textContent = copied ? '✓ Relatório Copiado!' : '⚠️ Falha ao copiar';
+          setTimeout(() => { copyBtn.textContent = originalLabel; }, 2200);
         });
       }
-      return groups.get(key);
     }
-
-    dayRecords.forEach((record) => {
-      const group = ensureGroup(record.Nome_Lote, record.Modelo_Base, record.Turno);
-      if (record.Status !== 'ESTORNADO') {
-        group.sent += Number(record.Qtd_Enviada) || 0;
-        group.movedToday = true;
-        plannedKeys.add(lotKey(record.Nome_Lote, record.Modelo_Base));
-      }
-    });
-
-    (Array.isArray(context.progressLots) ? context.progressLots : []).forEach((progress) => {
-      const group = ensureGroup(progress.Nome_Lote, progress.Modelo_Base, progress.Turno_Vinculado);
-      group.meta = Number(progress.Total_Meta) || group.meta;
-      group.sent = Number(progress.Total_Enviado) || 0;
-      group.balance = Math.max(0, group.meta - group.sent);
-      group.movedToday = Boolean(progress.MovidoHoje);
-      if (group.balance > 0 || group.movedToday) group.continuityVisible = true;
-    });
-
-    (Array.isArray(context.activeLots) ? context.activeLots : []).forEach((lot) => {
-      if (normalizeDate(lot.createdAt, lot.createdAt) !== today || !shiftMatches(lot.shift, context.shift)) return;
-      const key = lotKey(lot.name, lot.model);
-      ensureGroup(lot.name, lot.model, lot.shift);
-      plannedKeys.add(key);
-    });
-
-    const lots = [...groups.values()]
-      .filter((lot) => lot.continuityVisible || lot.movedToday)
-      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-    lots.forEach((lot) => {
-      if (lot.balance === 0 && !lot.continuityVisible) lot.balance = Math.max(0, lot.meta - lot.sent);
-      lot.percent = lot.meta > 0 ? Math.min(100, (lot.sent / lot.meta) * 100) : 0;
-      lot.completed = lot.meta > 0 && lot.sent >= lot.meta;
-    });
-
-    const totalPlanned = [...plannedKeys].reduce((sum, key) => sum + (groups.get(key)?.meta || 0), 0);
-    const totalSent = activeRecords.reduce((sum, record) => sum + (Number(record.Qtd_Enviada) || 0), 0);
-    const progressRows = Array.isArray(context.progressLots) ? context.progressLots : [];
-    const totalBalance = progressRows.length
-      ? progressRows.reduce((sum, lot) => {
-        const meta = Number(lot.Total_Meta) > 0
-          ? Number(lot.Total_Meta)
-          : Number(CATALOG[modelKey(lot.Modelo_Base)]?.total) || 0;
-        const sent = Number(lot.Total_Enviado) || 0;
-        return sum + Math.max(0, meta - sent);
-      }, 0)
-      : Math.max(0, totalPlanned - totalSent);
-    const completed = lots.filter((lot) => lot.completed).length;
-    const pendingLots = progressRows.length
-      ? progressRows.filter((lot) => {
-        const meta = Number(lot.Total_Meta) > 0
-          ? Number(lot.Total_Meta)
-          : Number(CATALOG[modelKey(lot.Modelo_Base)]?.total) || 0;
-        const sent = Number(lot.Total_Enviado) || 0;
-        return !(meta > 0 && sent >= meta);
-      }).length
-      : lots.filter((lot) => lot.balance > 0).length;
-    const progress = totalPlanned > 0 ? Math.min(100, (totalSent / totalPlanned) * 100) : 0;
-    const activeHours = new Set();
-    activeRecords.forEach((record) => {
-      const time = String(record.Hora_Ref || '');
-      const hour = time.match(/^(\d{2}):/)?.[1];
-      if (hour) activeHours.add(hour);
-    });
-    const rate = activeHours.size ? totalSent / activeHours.size : 0;
-    return {
-      date: new Date(),
-      lots,
-      totalPlanned,
-      totalSent,
-      totalBalance,
-      completed,
-      pendingLots,
-      progress,
-      rate,
-      activeHours: activeHours.size
-    };
   }
 
-  function automaticNotes(data) {
-    const percent = formatPercent(data.progress);
-    return [
-      `Atingido: ${percent} do programado (${data.totalSent} de ${data.totalPlanned} paletes).`,
-      `Lotes concluídos: ${data.completed} de ${data.lots.length}.`,
-      `Lotes com saldo pendente: ${data.pendingLots} (${data.totalBalance} paletes).`,
-      '',
-      `达成率：${percent}（已发运 ${data.totalSent} / 计划 ${data.totalPlanned} 托盘）。`,
-      `已完成批次：${data.completed} / ${data.lots.length}。`,
-      `待发批次：${data.pendingLots}，总待发余额：${data.totalBalance} 托盘。`
-    ].join('\n');
+  function renderHeader(context, selectedDate, selectedShift) {
+    const metaEl = el('cockpitHeaderMeta');
+    if (!metaEl) return;
+    const coord = context.coordinator || 'Anderson Andrade';
+    const leader = context.leadership || 'Daniela Menezes';
+    const shiftText = selectedShift === 'ALL' ? 'Todos os Turnos' : selectedShift;
+    metaEl.textContent = `Setor: Entrega de Materiais · Coordenador: ${coord} · Liderança: ${leader} · Filtro: ${formatDateBr(selectedDate)} (${shiftText})`;
   }
 
-  function notesKey(context) {
-    const shift = String(context.shift || 'Geral').replace(/\s+/g, '-');
-    return `byd_cockpit_notes_v1_${localDateRef()}_${shift}`;
+  function renderKpis(validRecords, voidedRecords, lots) {
+    const grid = el('cockpitKpiGrid');
+    if (!grid) return;
+
+    const totalPallets = validRecords.reduce((sum, r) => sum + (Number(r.Qtd_Enviada) || 0), 0);
+    const uniqueTrips = new Set(
+      validRecords.map((r) => r.ID_Viagem || `${r.Data_Ref}|${r.Hora_Ref}|${r.Motorista}|${r.Frota}`)
+    ).size;
+
+    const totalMeta = lots.reduce((sum, l) => sum + (Number(l.Total_Meta) || 0), 0);
+    const totalSentLots = lots.reduce((sum, l) => sum + (Number(l.Total_Enviado) || 0), 0);
+    const pendingLotsCount = lots.filter((l) => !l.Concluido).length;
+    const avgProgress = totalMeta > 0 ? Math.min(100, Math.round((totalSentLots / totalMeta) * 100)) : 0;
+
+    const voidedPallets = voidedRecords.reduce((sum, r) => sum + (Number(r.Qtd_Enviada) || 0), 0);
+
+    grid.innerHTML = `
+      <article class="kpi-card">
+        <div class="kpi-label">Paletes Entregues</div>
+        <div class="kpi-value">${totalPallets}</div>
+        <div class="kpi-sub">${validRecords.length} apontamento(s) ativo(s)</div>
+      </article>
+      <article class="kpi-card">
+        <div class="kpi-label">Viagens Realizadas</div>
+        <div class="kpi-value">${uniqueTrips}</div>
+        <div class="kpi-sub">Média ${uniqueTrips ? (totalPallets / uniqueTrips).toFixed(1) : '0.0'} paletes/viagem</div>
+      </article>
+      <article class="kpi-card">
+        <div class="kpi-label">Lotes no Pátio</div>
+        <div class="kpi-value">${pendingLotsCount}</div>
+        <div class="kpi-sub">Avanço geral dos lotes: ${avgProgress}%</div>
+      </article>
+      <article class="kpi-card">
+        <div class="kpi-label">Estornos</div>
+        <div class="kpi-value" style="color:var(--danger-text)">${voidedRecords.length}</div>
+        <div class="kpi-sub">${voidedPallets} palete(s) estornado(s)</div>
+      </article>
+    `;
   }
 
-  function updateNotesPreview() {
-    el('observationText').textContent = el('operatorNotes').value;
-  }
+  function renderLotsProgress(lots) {
+    const container = el('cockpitLotsGrid');
+    if (!container) return;
 
-  function renderGovernance(context, date) {
-    const shift = String(context.shift || 'Geral').replace(/^Turno\s+/i, '');
-    const items = [
-      ['◷', 'DATA', formatDate(date)],
-      ['♙', 'COORDENADOR', context.coordinator || 'Anderson Andrade'],
-      ['♧', 'LIDERANÇA', context.leadership || 'Daniela Menezes'],
-      ['♟', 'RESPONSÁVEL', context.operator || 'Eric Miranda'],
-      ['◉', 'TURNO / 班次', shift || 'Geral']
-    ];
-    el('governanceGrid').innerHTML = items.map(([icon, label, value]) => `
-      <div class="governance-pill">
-        <span class="governance-label">${icon} &nbsp; ${escapeHtml(label)}</span>
-        <span class="governance-value" title="${escapeHtml(value)}">${escapeHtml(value)}</span>
-      </div>`).join('');
-  }
-
-  function renderKpis(data) {
-    const cards = [
-      ['programmed', 'TOTAL PALETES PROGRAMADOS', '计划总托盘数', data.totalPlanned, 'Paletes / 托盘'],
-      ['sent', 'ENVIADO PARA O PISO', '已发运至产线', data.totalSent, 'Paletes / 托盘'],
-      ['balance', 'SALDO PENDENTE GERAL', '总待发余额', data.totalBalance, 'Paletes / 托盘'],
-      ['completed', 'LOTES CONCLUÍDOS', '已完成批次', `${data.completed} de ${data.lots.length}`, 'Lotes / 批次'],
-      ['progress', 'PROGRESSO GERAL', '总体进度', formatPercent(data.progress), ''],
-      ['rate', 'PALETES / HORA', '每小时发运', data.rate.toLocaleString('pt-BR', { maximumFractionDigits: 1 }), 'Paletes / 小时']
-    ];
-    el('kpiGrid').innerHTML = cards.map(([tone, title, chinese, value, unit]) => `
-      <article class="kpi-card ${tone}">
-        <p class="kpi-label">${title}<span>${chinese}</span></p>
-        <strong class="kpi-value">${escapeHtml(String(value))}</strong>
-        ${unit ? `<span class="kpi-unit">${unit}</span>` : ''}
-      </article>`).join('');
-  }
-
-  function renderLots(lots, showShift) {
-    const body = el('lotTable');
     if (!lots.length) {
-      body.innerHTML = '<tr><td colspan="7" style="padding:18px;text-align:center;color:#94A3B8">Nenhum lote encontrado para o dia e turno selecionados.</td></tr>';
+      container.innerHTML = '<div class="empty-state">Nenhum lote cadastrado ou movimentado para este turno.</div>';
       return;
     }
-    body.innerHTML = lots.map((lot, index) => {
-      const status = lot.completed
-        ? '<span class="report-status done">CONCLUÍDO / 已完成</span>'
-        : lot.meta > 0
-          ? '<span class="report-status running">EM ANDAMENTO / 进行中</span>'
-          : '<span class="report-status no-target">META NÃO DEFINIDA</span>';
-      return `<tr>
-        <td class="table-number">${String(index + 1).padStart(2, '0')}</td>
-        <td><strong>${escapeHtml(lot.name)}${showShift ? ` · Turno ${escapeHtml(lot.shift)}` : ''}</strong><br><span style="color:#94A3B8;font-size:8px">${escapeHtml(lot.model || '')}</span></td>
-        <td>${lot.meta}</td>
-        <td>${lot.sent}</td>
-        <td>${lot.balance}</td>
-        <td>${formatPercent(lot.percent)}</td>
-        <td>${status}</td>
-      </tr>`;
+
+    container.innerHTML = lots.map((lot) => {
+      const meta = Number(lot.Total_Meta) || 0;
+      const sent = Number(lot.Total_Enviado) || 0;
+      const balance = Math.max(0, meta - sent);
+      const pct = meta > 0 ? Math.min(100, Math.round((sent / meta) * 100)) : 0;
+      const done = Boolean(lot.Concluido) || (meta > 0 && sent >= meta);
+      const items = Array.isArray(lot.Itens) ? lot.Itens : [];
+
+      return `
+        <article class="pending-lot">
+          <div class="history-top" style="align-items:center;margin-bottom:6px">
+            <h4 class="pending-lot-title" style="margin:0">
+              ${escapeHtml(lot.Nome_Lote)} · ${escapeHtml(lot.Modelo_Base)}
+              ${lot.Turno_Vinculado ? `<span class="muted-small">(${escapeHtml(lot.Turno_Vinculado)})</span>` : ''}
+            </h4>
+            <span class="status-tag ${done ? 'ok' : ''}" style="${done ? '' : 'background:var(--byd-cyan-soft);color:var(--byd-cyan-text)'}">
+              ${done ? 'CONCLUÍDO · 100%' : `${pct}% · FALTAM ${balance}`}
+            </span>
+          </div>
+
+          <div class="pending-component-meta" style="margin-bottom:5px">
+            <span>Entregue: ${sent} / ${meta} paletes</span>
+            <span>Saldo: ${balance} paletes</span>
+          </div>
+          <div class="pending-track" style="margin-bottom:8px">
+            <span style="width:${pct}%"></span>
+          </div>
+
+          <div class="meta-row" style="margin-top:4px">
+            ${items.map((item) => `
+              <span class="meta-badge">
+                ${escapeHtml(item.Componente)}: <strong>${Number(item.Enviado) || 0}/${Number(item.Meta) || 0}</strong>
+              </span>
+            `).join('')}
+          </div>
+        </article>
+      `;
     }).join('');
   }
 
-  function renderReport(records, context) {
-    const data = buildReportData(records, context);
-    renderGovernance(context, data.date);
-    renderKpis(data);
-    renderLots(data.lots, context.shift === 'Geral');
+  function renderModelsVolume(validRecords) {
+    const container = el('cockpitModelsGrid');
+    if (!container) return;
 
-    const notesInput = el('operatorNotes');
-    const key = notesKey(context);
-    if (notesInput.dataset.notesKey !== key) {
-      notesInput.dataset.notesKey = key;
-      const saved = localStorage.getItem(key);
-      notesInput.value = saved === null ? automaticNotes(data) : saved;
-      notesInput.dataset.manual = saved === null ? 'false' : 'true';
-    } else if (notesInput.dataset.manual !== 'true') {
-      notesInput.value = automaticNotes(data);
-    }
-    updateNotesPreview();
-    el('reportGeneratedAt').textContent = `Gerado em ${new Date().toLocaleString('pt-BR')}`;
-    return data;
-  }
-
-  function downloadFile(file, filename) {
-    const url = URL.createObjectURL(file);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  function canvasToBlob(canvas) {
-    return new Promise((resolve, reject) => {
-      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Não foi possível gerar a imagem PNG.')), 'image/png');
+    const map = new Map();
+    validRecords.forEach((r) => {
+      const model = String(r.Modelo_Base || 'OUTROS').trim();
+      map.set(model, (map.get(model) || 0) + (Number(r.Qtd_Enviada) || 0));
     });
-  }
 
-  async function exportReport() {
-    const session = DB.getSession();
-    if (!session || !['ADMIN_GERAL','LIDER_TURNO'].includes(session.Perfil)) {
-      alert('Somente ADMIN_GERAL ou LIDER_TURNO pode exportar o relatório.');
+    const entries = [...map.entries()].sort((a, b) => b[1] - a[1]);
+    const total = entries.reduce((sum, [, qty]) => sum + qty, 0);
+
+    if (!entries.length) {
+      container.innerHTML = '<div class="empty-state">Sem movimentação por modelo na data/turno selecionados.</div>';
       return;
     }
-    const buttons = [el('exportPngButton'), el('exportShareButton')];
-    buttons.forEach((button) => { button.disabled = true; });
-    try {
-      if (!window.html2canvas) throw new Error('html2canvas não está disponível. Verifique a conexão e tente novamente.');
-      const report = el('cockpitContent');
-      const canvas = await html2canvas(report, {
-        scale: 2,
-        backgroundColor: '#0B1324',
-        useCORS: true,
-        width: report.scrollWidth,
-        windowWidth: Math.max(document.documentElement.clientWidth, report.scrollWidth),
-        scrollX: 0,
-        scrollY: 0,
-        onclone: (clonedDocument) => {
-          clonedDocument.querySelectorAll(
-            '.governance-pill, .governance-pill .governance-label, .governance-pill .governance-value, .report-status.done, .report-status.running'
-          ).forEach((element) => {
-            element.style.setProperty('overflow', 'visible', 'important');
-            element.style.setProperty('line-height', '1.4', 'important');
-          });
-          clonedDocument.querySelectorAll('.governance-value').forEach((element) => {
-            element.style.setProperty('white-space', 'normal', 'important');
-            element.style.setProperty('text-overflow', 'clip', 'important');
-          });
-        }
-      });
-      const blob = await canvasToBlob(canvas);
-      const date = localDateRef().replace(/-/g, '');
-      const file = new File([blob], `cockpit-byd-${date}.png`, { type: 'image/png', lastModified: Date.now() });
-      const shareData = { files: [file], title: 'Relatório diário de expedição BYD', text: 'Cockpit Logístico - Entrega de Materiais' };
-      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-        try {
-          await navigator.share(shareData);
-          return;
-        } catch (error) {
-          if (error.name === 'AbortError') return;
-        }
+
+    container.innerHTML = entries.map(([model, qty]) => {
+      const pct = total > 0 ? Math.round((qty / total) * 100) : 0;
+      return `
+        <div class="pending-lot" style="padding:10px 12px">
+          <div class="pending-component-meta" style="margin-bottom:6px">
+            <span><strong>${escapeHtml(model)}</strong></span>
+            <span>${qty} paletes (${pct}%)</span>
+          </div>
+          <div class="pending-track">
+            <span style="width:${pct}%"></span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderDriversProductivity(validRecords) {
+    const container = el('cockpitDriversList');
+    if (!container) return;
+
+    const byDriver = new Map();
+    validRecords.forEach((r) => {
+      const name = String(r.Motorista || 'NÃO INFORMADO').trim().toUpperCase();
+      if (!byDriver.has(name)) {
+        byDriver.set(name, { name, pallets: 0, trips: new Set(), fleets: new Set() });
       }
-      downloadFile(file, file.name);
-    } catch (error) {
-      alert(error.message || 'Falha ao exportar o relatório.');
-    } finally {
-      buttons.forEach((button) => { button.disabled = false; });
-    }
-  }
-
-  function update(records, context = {}) {
-    if (!Array.isArray(records)) records = [];
-    applyModels(context.models);
-    const canManageReport = ['ADMIN_GERAL','LIDER_TURNO'].includes(context.profile);
-    el('operatorNotes').disabled = !canManageReport;
-    el('resetNotesButton').hidden = !canManageReport;
-    el('exportPngButton').hidden = !canManageReport;
-    el('exportShareButton').hidden = !canManageReport;
-    renderReport(records, {
-      operator: context.operator || 'Eric Miranda',
-      shift: context.shift || 'Geral',
-      coordinator: context.coordinator || 'Anderson Andrade',
-      leadership: context.leadership || 'Daniela Menezes',
-      activeLots: Array.isArray(context.activeLots) ? context.activeLots : [],
-      progressLots: Array.isArray(context.progressLots) ? context.progressLots : [],
-      models: Array.isArray(context.models) ? context.models : [],
-      profile: context.profile || 'OPERADOR'
+      const entry = byDriver.get(name);
+      entry.pallets += Number(r.Qtd_Enviada) || 0;
+      entry.trips.add(r.ID_Viagem || `${r.Data_Ref}|${r.Hora_Ref}|${r.Frota}`);
+      if (r.Frota) entry.fleets.add(String(r.Frota).trim().toUpperCase());
     });
+
+    const list = [...byDriver.values()].sort((a, b) => b.pallets - a.pallets);
+    if (!list.length) {
+      container.innerHTML = '<div class="empty-state">Nenhuma entrega registrada por motorista neste filtro.</div>';
+      return;
+    }
+
+    container.innerHTML = list.map((item, idx) => `
+      <div class="user-row">
+        <div>
+          <div class="user-name">#${idx + 1} · ${escapeHtml(item.name)}</div>
+          <div class="user-detail">
+            ${item.trips.size} viagem(ns) · Frota(s): ${escapeHtml([...item.fleets].join(', ') || '—')}
+          </div>
+        </div>
+        <div class="history-qty">${item.pallets} paletes</div>
+      </div>
+    `).join('');
   }
 
-  el('operatorNotes').addEventListener('input', () => {
-    const input = el('operatorNotes');
-    input.dataset.manual = 'true';
-    if (input.dataset.notesKey) localStorage.setItem(input.dataset.notesKey, input.value);
-    updateNotesPreview();
-  });
-  el('resetNotesButton').addEventListener('click', () => {
-    const input = el('operatorNotes');
-    if (input.dataset.notesKey) localStorage.removeItem(input.dataset.notesKey);
-    input.dataset.manual = 'false';
-    update(input._records || [], input._context || {});
-  });
-  el('exportPngButton').addEventListener('click', exportReport);
-  el('exportShareButton').addEventListener('click', exportReport);
+  function renderBilingualSummary(context, selectedDate, selectedShift, validRecords, voidedRecords, lots) {
+    const box = el('cockpitBilingualCard');
+    if (!box) return;
 
-  const originalUpdate = update;
-  function updateWithState(records, context = {}) {
-    el('operatorNotes')._records = records;
-    el('operatorNotes')._context = context;
-    originalUpdate(records, context);
+    const coord = context.coordinator || 'Anderson Andrade';
+    const leader = context.leadership || 'Daniela Menezes';
+    const totalPallets = validRecords.reduce((sum, r) => sum + (Number(r.Qtd_Enviada) || 0), 0);
+    const uniqueTrips = new Set(
+      validRecords.map((r) => r.ID_Viagem || `${r.Data_Ref}|${r.Hora_Ref}|${r.Motorista}|${r.Frota}`)
+    ).size;
+
+    const modelMap = new Map();
+    validRecords.forEach((r) => {
+      const m = String(r.Modelo_Base || 'OUTROS').trim();
+      modelMap.set(m, (modelMap.get(m) || 0) + (Number(r.Qtd_Enviada) || 0));
+    });
+    const modelLines = modelMap.size
+      ? [...modelMap.entries()].sort((a, b) => b[1] - a[1]).map(([m, q]) => `• ${m}: ${q} paletes (托盘)`).join('\n')
+      : '• Sem movimentação / 暂无配送记录';
+
+    const lotLines = lots.length
+      ? lots.map((l) => {
+          const sent = Number(l.Total_Enviado) || 0;
+          const meta = Number(l.Total_Meta) || 0;
+          const pct = meta > 0 ? Math.min(100, Math.round((sent / meta) * 100)) : 0;
+          const statusZh = sent >= meta && meta > 0 ? '已完成' : '进行中';
+          return `• ${l.Nome_Lote} [${l.Modelo_Base}]: ${sent}/${meta} (${pct}% · ${statusZh})`;
+        }).join('\n')
+      : '• Nenhum lote ativo / 暂无活跃批次';
+
+    box.textContent = [
+      '📊 BYD AUTO BRASIL · ENTREGA DE MATERIAIS / 物料配送日报',
+      `📅 Data / 日期: ${formatDateBr(selectedDate)}`,
+      `🕒 Turno / 班次: ${shiftToChinese(selectedShift)}`,
+      `👔 Coordenador / 协调员: ${coord} | Liderança / 班长: ${leader}`,
+      '--------------------------------------------------',
+      `📦 Total Entregue / 总配送托盘数: ${totalPallets} paletes`,
+      `🚛 Viagens / 总运输趟次: ${uniqueTrips} | Estornos / 冲销: ${voidedRecords.length}`,
+      '',
+      '🚗 VOLUME POR MODELO / 按车型统计:',
+      modelLines,
+      '',
+      '📋 STATUS DOS LOTES / 批次进度:',
+      lotLines
+    ].join('\n');
   }
 
-  return { update: updateWithState };
+  function renderAuditTable(filteredRecords) {
+    const tbody = el('cockpitTableBody');
+    if (!tbody) return;
+
+    if (!filteredRecords.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:16px">Nenhum lançamento encontrado para esta data/turno.</td></tr>';
+      return;
+    }
+
+    const sorted = filteredRecords.slice().sort((a, b) =>
+      String(b.DataHora || '').localeCompare(String(a.DataHora || ''))
+    );
+
+    tbody.innerHTML = sorted.map((r) => {
+      const voided = String(r.Status || '').toUpperCase() === 'ESTORNADO';
+      return `
+        <tr>
+          <td>${escapeHtml(formatTime(r))}</td>
+          <td>${escapeHtml(r.Turno || '')}</td>
+          <td>
+            <strong>${escapeHtml(r.Nome_Lote || '')}</strong> · ${escapeHtml(r.Componente || '')}
+            ${voided && r.Motivo_Estorno ? `<div class="muted-small" style="color:var(--danger-text)">Motivo: ${escapeHtml(r.Motivo_Estorno)}</div>` : ''}
+          </td>
+          <td><strong>${Number(r.Qtd_Enviada) || 0}</strong></td>
+          <td>${escapeHtml(r.Motorista || '')} · ${escapeHtml(r.Frota || '')}</td>
+          <td>${escapeHtml(r.Operador || '')}</td>
+          <td><span class="status-tag ${voided ? 'void' : 'ok'}">${voided ? 'ESTORNADO' : 'ENTREGUE'}</span></td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function render() {
+    const dateInput = el('cockpitDateFilter');
+    const shiftSelect = el('cockpitShiftFilter');
+    const selectedDate = (dateInput && dateInput.value) || todayIso();
+    const selectedShift = (shiftSelect && shiftSelect.value) || 'ALL';
+
+    const filteredRecords = lastRecords.filter((r) => {
+      const sameDate = normalizeDate(r.Data_Ref, r.DataHora) === selectedDate;
+      const sameShift = selectedShift === 'ALL' || turnKey(r.Turno) === turnKey(selectedShift);
+      return sameDate && sameShift;
+    });
+
+    const validRecords = filteredRecords.filter((r) => String(r.Status || '').toUpperCase() !== 'ESTORNADO');
+    const voidedRecords = filteredRecords.filter((r) => String(r.Status || '').toUpperCase() === 'ESTORNADO');
+
+    const allLots = Array.isArray(lastContext.progressLots) ? lastContext.progressLots : [];
+    const filteredLots = selectedShift === 'ALL'
+      ? allLots
+      : allLots.filter((l) => !l.Turno_Vinculado || turnKey(l.Turno_Vinculado) === turnKey(selectedShift));
+
+    renderHeader(lastContext, selectedDate, selectedShift);
+    renderKpis(validRecords, voidedRecords, filteredLots);
+    renderLotsProgress(filteredLots);
+    renderModelsVolume(validRecords);
+    renderDriversProductivity(validRecords);
+    renderBilingualSummary(lastContext, selectedDate, selectedShift, validRecords, voidedRecords, filteredLots);
+    renderAuditTable(filteredRecords);
+  }
+
+  function update(records = [], context = {}) {
+    lastRecords = Array.isArray(records) ? records : [];
+    lastContext = context || {};
+    ensureControls(lastContext);
+    render();
+  }
+
+  return { update };
 })();
