@@ -1,673 +1,488 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#090D16">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>Entrega de Materiais • BYD</title>
-  <link rel="manifest" href="manifest.json">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-  <style>
-    :root {
-      color-scheme: dark;
-      --page: #090D16;
-      --surface: #111827;
-      --surface-raised: #151f30;
-      --border: #1E293B;
-      --muted: #94A3B8;
-      --cyan: #38BDF8;
-      --red: #E60012;
-      --green: #10B981;
-    }
-    * { box-sizing: border-box; }
-    [hidden] { display: none !important; }
-    body { margin: 0; min-height: 100vh; background: var(--page); color: #F8FAFC; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    button, input, select, textarea { font: inherit; }
-    button { touch-action: manipulation; }
-    .app-header { position: sticky; top: 0; z-index: 30; border-bottom: 1px solid var(--border); background: rgba(9,13,22,.96); padding: max(10px, env(safe-area-inset-top)) 16px 12px; backdrop-filter: blur(16px); }
-    .header-inner, .page-wrap { width: min(100%, 980px); margin: 0 auto; }
-    .brand-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .brand-lockup { display: flex; align-items: center; gap: 12px; min-width: 0; }
-    .byd-mark { display: inline-flex; width: 61px; height: 34px; flex: 0 0 auto; align-items: center; justify-content: center; border: 2px solid #fff; border-radius: 50%; background: var(--red); color: #fff; font-size: 15px; font-weight: 950; letter-spacing: 1px; line-height: 1; box-shadow: 0 0 18px rgba(230,0,18,.2); }
-    .brand-title { margin: 0; font-size: 13px; font-weight: 900; letter-spacing: .12em; line-height: 1.2; }
-    .brand-subtitle { margin: 4px 0 0; color: #94A3B8; font-size: 10px; letter-spacing: .02em; }
-    .header-actions { display: flex; align-items: center; gap: 8px; }
-    .sync-pill, .button, .control, .card, .chip { border: 1px solid var(--border); border-radius: 12px; }
-    .sync-pill { max-width: 145px; overflow: hidden; padding: 8px 10px; color: #86EFAC; background: rgba(16,185,129,.08); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-    .sync-pill.pending { color: #FCD34D; border-color: rgba(245,158,11,.3); background: rgba(245,158,11,.08); }
-    .sync-pill.offline { color: #FDA4AF; border-color: rgba(230,0,18,.3); background: rgba(230,0,18,.08); }
-    .button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: 8px; padding: 10px 14px; background: #172235; color: #E2E8F0; font-size: 13px; font-weight: 800; cursor: pointer; transition: background .15s, transform .15s, border-color .15s; }
-    .button:hover { border-color: #3B526D; background: #1B2A40; }
-    .button:active { transform: scale(.98); }
-    .button:disabled { cursor: not-allowed; opacity: .55; }
-    .button-primary { border-color: #D40011; background: var(--red); color: #fff; }
-    .button-primary:hover { border-color: #FB7185; background: #C90010; }
-    .button-cyan { border-color: #0284C7; background: #0369A1; color: #F0F9FF; }
-    .button-green { border-color: #059669; background: #047857; color: #fff; }
-    .button-danger { border-color: #7F1D1D; color: #FCA5A5; background: rgba(127,29,29,.18); }
-    .header-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(130px, .7fr) auto auto; gap: 8px; margin-top: 12px; }
-    .header-select-wrap { min-width: 0; }
-    .eyebrow { display: block; margin: 0 0 5px 2px; color: #64748B; font-size: 9px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
-    .control { width: 100%; min-height: 42px; padding: 9px 11px; outline: none; background: #0B1324; color: #F8FAFC; font-size: 13px; }
-    .control:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(56,189,248,.12); }
-    .sync-button { align-self: end; min-height: 42px; padding: 9px 11px; }
-    main { padding: 18px 16px calc(92px + env(safe-area-inset-bottom)); }
-    .screen { display: none; }
-    .screen.active { display: block; }
-    .section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; margin: 2px 0 14px; }
-    .section-title { margin: 0; font-size: 18px; font-weight: 900; letter-spacing: .04em; }
-    .section-kicker { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
-    .card { background: var(--surface); padding: 15px; box-shadow: 0 12px 30px rgba(0,0,0,.12); }
-    .card-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; color: #E2E8F0; font-size: 12px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
-    .field-label { display: block; margin: 0 0 6px; color: #94A3B8; font-size: 11px; font-weight: 750; }
-    .batch-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; margin-bottom: 12px; }
-    .batch-select { min-width: 0; min-height: 48px; font-size: 14px; font-weight: 800; }
-    .batch-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 11px; color: #94A3B8; font-size: 11px; }
-    .meta-badge { border: 1px solid #26364B; border-radius: 999px; padding: 5px 9px; background: #0B1324; color: #CBD5E1; font-weight: 750; }
-    .meta-badge strong { color: var(--cyan); }
-    .component-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
-    .component-button { display: flex; min-height: 76px; flex-direction: column; align-items: flex-start; justify-content: space-between; gap: 8px; border: 1px solid var(--border); border-radius: 12px; padding: 11px; background: #0B1324; color: #CBD5E1; text-align: left; cursor: pointer; }
-    .component-button.selected { border-color: var(--cyan); background: rgba(14,116,144,.18); box-shadow: inset 0 0 0 1px rgba(56,189,248,.16); color: #F0F9FF; }
-    .component-name { font-size: 12px; font-weight: 850; line-height: 1.25; }
-    .component-target { color: var(--cyan); font-size: 10px; font-weight: 800; }
-    .balance-warning { min-height: 18px; margin: 8px 0 0; color: #FDA4AF; font-size: 11px; font-weight: 800; }
-    .balance-warning.visible { padding: 8px 10px; border: 1px solid rgba(230,0,18,.35); border-radius: 9px; background: rgba(230,0,18,.1); }
-    .trip-items { display: grid; gap: 8px; margin-top: 12px; }
-    .trip-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #26364B; border-radius: 10px; padding: 10px; background: #0B1324; }
-    .trip-item-title { margin: 0; font-size: 11px; font-weight: 850; }
-    .trip-item-meta { margin: 4px 0 0; color: #94A3B8; font-size: 10px; }
-    .trip-summary { margin: 10px 0 0; color: #7DD3FC; font-size: 11px; font-weight: 850; }
-    .pending-list { display: grid; gap: 10px; }
-    .pending-lot { border: 1px solid #26364B; border-radius: 12px; padding: 12px; background: #0B1324; }
-    .pending-lot-title { margin: 0 0 8px; font-size: 12px; font-weight: 900; }
-    .pending-component { width: 100%; margin-top: 7px; border: 1px solid #243246; border-radius: 9px; padding: 8px 10px; background: #111827; color: #CBD5E1; text-align: left; cursor: pointer; }
-    .pending-component:hover { border-color: var(--cyan); color: #F0F9FF; }
-    .pending-component-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; font-weight: 800; }
-    .pending-track { height: 5px; overflow: hidden; margin-top: 6px; border-radius: 99px; background: #1E293B; }
-    .pending-track span { display: block; height: 100%; border-radius: inherit; background: var(--cyan); }
-    .last-refresh { color: #7DD3FC; font-size: 10px; font-weight: 800; white-space: nowrap; }
-    .quantity-panel { display: grid; grid-template-columns: auto minmax(100px, 1fr) auto; align-items: center; gap: 10px; margin: 14px 0 10px; }
-    .quantity-display { width: 100%; height: 80px; border: 1px solid #243246; border-radius: 16px; background: #090D16; color: #fff; font-size: 46px; font-variant-numeric: tabular-nums; font-weight: 950; text-align: center; outline: none; }
-    .quantity-display:focus { border-color: var(--cyan); }
-    .quantity-arrow { width: 52px; height: 52px; border: 1px solid #334155; border-radius: 14px; background: #182337; color: #E2E8F0; font-size: 24px; font-weight: 800; }
-    .quantity-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 7px; }
-    .step-button { min-height: 42px; border: 1px solid #2B3A50; border-radius: 10px; background: #172235; color: #E2E8F0; font-size: 12px; font-weight: 900; }
-    .step-button.plus { border-color: #075985; color: #7DD3FC; }
-    .step-button.meta { grid-column: span 5; border-color: #0E7490; background: rgba(8,145,178,.15); color: #67E8F9; }
-    .driver-fleet-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .choice-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 9px; }
-    .chip { min-height: 34px; padding: 7px 9px; background: #0B1324; color: #CBD5E1; font-size: 10px; font-weight: 800; cursor: pointer; }
-    .chip.selected { border-color: #0891B2; background: rgba(8,145,178,.16); color: #67E8F9; }
-    .evidence-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
-    .file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; clip-path: inset(50%); }
-    .photo-preview { display: none; width: 100%; max-height: 260px; margin-top: 12px; border: 1px solid var(--border); border-radius: 12px; background: #090D16; object-fit: contain; }
-    .photo-preview.visible { display: block; }
-    .photo-hint { color: #64748B; font-size: 10px; }
-    .action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 14px; }
-    .action-grid .button { min-height: 54px; padding: 10px; font-size: 12px; line-height: 1.25; }
-    .history-list { display: grid; gap: 9px; }
-    .history-item { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: #0B1324; }
-    .history-top { display: flex; justify-content: space-between; gap: 10px; }
-    .history-name { margin: 0; font-size: 13px; font-weight: 850; }
-    .history-sub { margin: 4px 0 0; color: #94A3B8; font-size: 10px; }
-    .history-qty { color: var(--cyan); font-size: 14px; font-weight: 950; white-space: nowrap; }
-    .history-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
-    .history-actions .button { min-height: 36px; border-radius: 9px; padding: 7px 10px; font-size: 10px; }
-    .status-tag { border-radius: 99px; padding: 4px 8px; font-size: 9px; font-weight: 900; letter-spacing: .06em; white-space: nowrap; }
-    .status-tag.ok { background: rgba(16,185,129,.13); color: #6EE7B7; }
-    .status-tag.void { background: rgba(230,0,18,.14); color: #FDA4AF; }
-    .empty-state { border: 1px dashed #334155; border-radius: 12px; padding: 24px 12px; color: #64748B; font-size: 12px; text-align: center; }
-    .bottom-nav { position: fixed; z-index: 25; right: 0; bottom: 0; left: 0; border-top: 1px solid var(--border); background: rgba(9,13,22,.97); padding: 8px 16px max(8px, env(safe-area-inset-bottom)); backdrop-filter: blur(14px); }
-    .nav-inner { display: grid; width: min(100%, 500px); grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 auto; }
-    .nav-button { min-height: 46px; border: 1px solid transparent; border-radius: 12px; background: transparent; color: #64748B; font-size: 12px; font-weight: 900; }
-    .nav-button.active { border-color: #1E3A5F; background: #111D30; color: var(--cyan); }
-    .cockpit-controls { margin-bottom: 12px; }
-    .cockpit-controls textarea { min-height: 84px; resize: vertical; }
-    .cockpit-controls-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-    .report-scroll { overflow-x: auto; padding-bottom: 8px; }
-    #cockpitContent { width: 100%; min-width: 850px; max-width: 1080px; margin: 0 auto; padding: 22px; border: 1px solid #243247; border-radius: 18px; background: #0B1324; color: #F8FAFC; box-shadow: 0 18px 50px rgba(0,0,0,.22); }
-    .report-header { display: grid; grid-template-columns: 92px 1fr 92px; align-items: center; gap: 10px; border-bottom: 1px solid #334155; padding-bottom: 15px; text-align: center; }
-    .report-logo { width: 72px; height: 42px; justify-self: start; font-size: 18px; }
-    .report-title { margin: 0; font-size: 17px; font-weight: 950; letter-spacing: .07em; }
-    .report-chinese { margin: 5px 0 0; color: #CBD5E1; font-size: 13px; font-weight: 650; letter-spacing: .04em; }
-    .report-mark-spacer { justify-self: end; width: 72px; }
-    .report-ribbon { margin: 13px 0; border: 1px solid #A16207; border-radius: 8px; padding: 9px 12px; background: linear-gradient(90deg, #78350F, #B45309, #78350F); color: #FEF3C7; font-size: 12px; font-weight: 950; letter-spacing: .1em; text-align: center; }
-    .governance-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 12px 0 14px; }
-    .governance-pill { display: flex; min-height: 76px; flex-direction: column; justify-content: center; border: 1px solid #CBD5E1; border-radius: 10px; padding: 12px 14px; background: #F8FAFC; color: #0F172A; line-height: 1.35; word-break: break-word; }
-    .governance-label { display: block; margin-bottom: 5px; color: #475569; font-size: 8px; font-weight: 950; letter-spacing: .08em; line-height: 1.35; word-break: break-word; }
-    .governance-value { display: block; overflow: visible; font-size: 11px; font-weight: 900; line-height: 1.35; word-break: break-word; white-space: normal; }
-    .kpi-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
-    .kpi-card { min-height: 100px; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; padding: 13px; box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
-    .kpi-card.programmed { background: #334155; }
-    .kpi-card.sent { background: #15803D; }
-    .kpi-card.balance { background: #B91C1C; }
-    .kpi-card.completed { background: #581C87; }
-    .kpi-card.progress { background: #0F766E; }
-    .kpi-card.rate { background: #0369A1; }
-    .kpi-label { min-height: 30px; margin: 0; color: rgba(255,255,255,.86); font-size: 9px; font-weight: 900; letter-spacing: .055em; line-height: 1.35; }
-    .kpi-label span { display: block; font-size: 9px; font-weight: 650; letter-spacing: 0; }
-    .kpi-value { display: block; margin-top: 6px; color: #fff; font-size: 26px; font-weight: 950; line-height: 1; }
-    .kpi-unit { display: block; margin-top: 5px; color: rgba(255,255,255,.78); font-size: 9px; font-weight: 750; }
-    .table-title { margin: 18px 0 8px; color: #E2E8F0; font-size: 11px; font-weight: 950; letter-spacing: .08em; }
-    .report-table { width: 100%; border-collapse: separate; border-spacing: 0; overflow: hidden; border: 1px solid #334155; border-radius: 10px; font-size: 10px; }
-    .report-table th { padding: 9px 7px; background: #172235; color: #CBD5E1; font-size: 8px; font-weight: 950; letter-spacing: .04em; text-align: left; }
-    .report-table td { border-top: 1px solid #243247; padding: 9px 7px; color: #E2E8F0; }
-    .report-table tr:nth-child(even) td { background: rgba(255,255,255,.025); }
-    .table-number { color: #94A3B8 !important; font-variant-numeric: tabular-nums; }
-    .report-status { display: inline-block; border-radius: 99px; padding: 5px 7px; font-size: 8px; font-weight: 950; white-space: nowrap; }
-    .report-status.done { background: #065F46; color: #A7F3D0; }
-    .report-status.running { background: #78350F; color: #FDE68A; }
-    .report-status.no-target { background: #334155; color: #CBD5E1; }
-    .observation-wrap { position: relative; overflow: hidden; min-height: 110px; margin-top: 14px; border: 1px solid #CBD5E1; border-radius: 13px; padding: 13px 16px; background: #F8FAFC; color: #0F172A; }
-    .observation-title { margin: 0 0 7px; color: #334155; font-size: 9px; font-weight: 950; letter-spacing: .08em; }
-    .observation-text { position: relative; z-index: 1; max-width: calc(100% - 92px); margin: 0; color: #1E293B; font-size: 10px; line-height: 1.55; white-space: pre-wrap; }
-    .watermark { position: absolute; right: 17px; bottom: 14px; color: rgba(230,0,18,.13); font-size: 36px; font-weight: 1000; letter-spacing: .06em; }
-    .report-footer { display: flex; justify-content: space-between; gap: 10px; margin-top: 10px; color: #64748B; font-size: 8px; }
-    dialog { width: min(calc(100% - 28px), 510px); max-height: min(88vh, 780px); overflow: auto; border: 1px solid #334155; border-radius: 18px; padding: 0; background: #111827; color: #F8FAFC; box-shadow: 0 24px 90px rgba(0,0,0,.65); }
-    dialog::backdrop { background: rgba(0,0,0,.74); backdrop-filter: blur(3px); }
-    .dialog-body { padding: 20px; }
-    .dialog-title-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 16px; }
-    .dialog-title { margin: 0; font-size: 17px; font-weight: 950; }
-    .dialog-close { width: 38px; height: 38px; border: 1px solid #334155; border-radius: 10px; background: #0B1324; color: #CBD5E1; font-size: 21px; }
-    .dialog-fields { display: grid; gap: 12px; }
-    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-    .help-text { margin: 6px 0 0; color: #64748B; font-size: 10px; line-height: 1.5; }
-    .toast { position: fixed; z-index: 60; right: 16px; bottom: calc(80px + env(safe-area-inset-bottom)); left: 16px; display: none; width: fit-content; max-width: min(500px, calc(100% - 32px)); margin: auto; border: 1px solid #334155; border-radius: 12px; padding: 12px 15px; background: #172235; color: #F8FAFC; font-size: 12px; box-shadow: 0 12px 36px rgba(0,0,0,.4); }
-    .toast.visible { display: block; }
-    #appShell[hidden] { display: none !important; }
-    .login-screen { display: grid; min-height: 100vh; align-items: center; justify-items: center; padding: 22px 16px calc(22px + env(safe-area-inset-bottom)); background: radial-gradient(ellipse at 50% 20%, rgba(14,116,144,.12), transparent 50%), var(--page); }
-    .login-card { width: min(100%, 430px); border: 1px solid var(--border); border-radius: 20px; padding: 24px; background: var(--surface); box-shadow: 0 24px 70px rgba(0,0,0,.35); }
-    .login-brand { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 24px; text-align: center; }
-    .login-brand .byd-mark { width: 82px; height: 46px; font-size: 20px; }
-    .login-title { margin: 0; font-size: 17px; font-weight: 950; letter-spacing: .08em; }
-    .login-subtitle { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
-    .login-fields { display: grid; gap: 13px; }
-    .login-fields .control { min-height: 50px; font-size: 16px; }
-    .login-submit { width: 100%; min-height: 52px; margin-top: 18px; font-size: 14px; }
-    .login-feedback { min-height: 18px; margin: 12px 0 0; color: #FDA4AF; font-size: 11px; text-align: center; }
-    .user-summary { display: flex; min-width: 0; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 11px; padding: 7px 10px; background: #0B1324; color: #E2E8F0; font-size: 11px; font-weight: 800; }
-    .user-summary span { overflow: hidden; max-width: 160px; text-overflow: ellipsis; white-space: nowrap; }
-    .user-role { flex: 0 0 auto; border-radius: 99px; padding: 4px 7px; background: rgba(56,189,248,.12); color: #7DD3FC; font-size: 8px; font-weight: 950; }
-    .config-block { margin-bottom: 12px; }
-    .config-block:last-child { margin-bottom: 0; }
-    .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-    .settings-model-picker { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 12px; }
-    .model-editor-grid { display: grid; grid-template-columns: minmax(0, 1fr) 100px; gap: 8px; margin: 10px 0; }
-    .settings-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-    .users-list { display: grid; gap: 8px; margin-top: 14px; }
-    .user-row { display: grid; grid-template-columns: minmax(130px, 1.4fr) minmax(105px, 1fr) minmax(75px, .7fr) auto auto; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 11px; padding: 10px; background: #0B1324; }
-    .user-name { overflow: hidden; font-size: 11px; font-weight: 850; text-overflow: ellipsis; white-space: nowrap; }
-    .user-detail { margin-top: 3px; color: #94A3B8; font-size: 9px; }
-    .user-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
-    .user-actions .button { min-height: 32px; border-radius: 8px; padding: 6px 8px; font-size: 9px; }
-    .role-tag { display: inline-flex; border-radius: 99px; padding: 5px 8px; background: rgba(56,189,248,.12); color: #7DD3FC; font-size: 9px; font-weight: 900; }
-    .role-tag.admin { background: rgba(230,0,18,.14); color: #FDA4AF; }
-    .user-status { color: #6EE7B7; font-size: 9px; font-weight: 900; }
-    .user-status.inactive { color: #FDA4AF; }
-    .config-note { margin: 9px 0 0; color: #64748B; font-size: 10px; line-height: 1.5; }
-    .edit-component-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    @media (max-width: 600px) {
-      .brand-title { font-size: 11px; letter-spacing: .08em; }
-      .brand-subtitle { max-width: 220px; font-size: 9px; }
-      .byd-mark { width: 54px; height: 31px; font-size: 13px; }
-      .header-actions { gap: 6px; }
-      .sync-pill { max-width: 104px; padding: 7px 8px; font-size: 9px; }
-      .header-controls { grid-template-columns: minmax(0, 1fr) minmax(95px, .7fr) auto; gap: 6px; }
-      .control { padding: 8px; font-size: 12px; }
-      .sync-button { width: 42px; overflow: hidden; padding: 8px; font-size: 17px; }
-      .batch-row { grid-template-columns: 1fr auto auto; gap: 6px; }
-      main { padding: 14px 12px calc(84px + env(safe-area-inset-bottom)); }
-      .card { padding: 13px; }
-      .driver-fleet-grid { grid-template-columns: 1fr; }
-      .action-grid { grid-template-columns: 1fr; }
-      .settings-grid { grid-template-columns: 1fr; }
-      .user-row { grid-template-columns: 1fr auto; }
-      .user-row > .user-actions { grid-column: 1 / -1; justify-content: flex-start; }
-      .header-controls { grid-template-columns: minmax(0, 1fr) auto auto auto; }
-      .user-summary { max-width: 176px; }
-      .governance-grid { grid-template-columns: repeat(5, minmax(105px, 1fr)); }
-      #cockpitContent { padding: 15px; }
-    }
-    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0B1120">
+  <title>BYD · Controle Logístico — Entrega de Materiais</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="stylesheet" href="./style.css">
 </head>
 <body>
+  <!-- TELA DE LOGIN -->
   <section id="loginView" class="login-screen">
-    <form id="loginForm" class="login-card">
-      <div class="login-brand">
-        <span class="byd-mark" aria-label="BYD">BYD</span>
-        <div>
-          <h1 class="login-title">ENTREGA DE MATERIAIS</h1>
-          <p class="login-subtitle">Logística Industrial • Acesso autenticado</p>
-        </div>
-      </div>
-      <div class="login-fields">
+    <div class="login-card">
+      <div class="brand-badge">BYD AUTO BRASIL · ENTREGA DE MATERIAIS</div>
+      <h1 class="login-title">Acesso ao Cockpit</h1>
+      <p class="login-subtitle">Entre com sua matrícula e PIN de 4 dígitos para sincronizar em tempo real.</p>
+
+      <form id="loginForm" class="stack" autocomplete="off">
         <label>
           <span class="field-label">Matrícula</span>
-          <input id="loginMatricula" class="control" inputmode="numeric" autocomplete="username" maxlength="30" required placeholder="Informe sua matrícula">
+          <input id="loginMatricula" class="control" type="text" inputmode="numeric" placeholder="Ex: 1002" maxlength="30" required>
         </label>
+
         <label>
           <span class="field-label">PIN (4 dígitos)</span>
-          <input id="loginPin" class="control" type="password" inputmode="numeric" autocomplete="current-password" pattern="[0-9]{4}" minlength="4" maxlength="4" required placeholder="••••">
+          <input id="loginPin" class="control" type="password" inputmode="numeric" pattern="\d{4}" maxlength="4" placeholder="••••" required>
         </label>
+
         <label>
           <span class="field-label">Turno</span>
-          <select id="loginShift" class="control" required>
+          <select id="loginShift" class="control">
             <option value="Turno A">Turno A</option>
-            <option value="Turno B">Turno B</option>
+            <option value="Turno B" selected>Turno B</option>
             <option value="Turno C">Turno C</option>
-            <option value="Geral" data-admin-general="true">Geral (todos os turnos)</option>
+            <option value="Geral" data-admin-general="true" hidden>Geral (Todos os Turnos)</option>
           </select>
         </label>
-      </div>
-      <button id="loginButton" class="button button-primary login-submit" type="submit">Entrar com segurança</button>
-      <p id="loginFeedback" class="login-feedback" role="alert" aria-live="polite"></p>
-    </form>
+
+        <p id="loginFeedback" class="feedback-text" role="alert"></p>
+
+        <button id="loginButton" class="button button-primary" type="submit">Entrar no Sistema</button>
+      </form>
+    </div>
   </section>
 
-  <div id="appShell" hidden>
-  <header class="app-header">
-    <div class="header-inner">
-      <div class="brand-row">
-        <div class="brand-lockup">
-          <span class="byd-mark" aria-label="BYD">BYD</span>
-          <div>
-            <h1 class="brand-title">ENTREGA DE MATERIAIS</h1>
-            <p class="brand-subtitle">Logística Industrial • Transferência de Pátio</p>
-          </div>
+  <!-- APLICATIVO PRINCIPAL -->
+  <div id="appShell" class="app-shell" hidden>
+    <header class="topbar">
+      <div class="topbar-row">
+        <div>
+          <div class="brand-mini">BYD · ENTREGA DE MATERIAIS</div>
+          <div id="operatorSummary" class="operator-summary"></div>
         </div>
-        <div class="header-actions">
-          <div id="syncStatus" class="sync-pill" role="status">● Sincronizado</div>
-        </div>
-      </div>
-      <div class="header-controls">
-        <div id="operatorSummary" class="user-summary" aria-label="Sessão autenticada"></div>
-        <label id="shiftHeaderWrap" class="header-select-wrap">
-          <span class="eyebrow">Turno</span>
-          <div id="shiftSummary" class="control" aria-label="Turno da sessão"></div>
-          <select id="generalShiftSelect" class="control" aria-label="Filtrar turno" hidden>
+        <div class="topbar-badges">
+          <span id="shiftSummary" class="shift-pill">Turno B</span>
+          <select id="generalShiftSelect" class="control compact-select" hidden aria-label="Selecionar turno">
             <option value="Turno A">Turno A</option>
             <option value="Turno B">Turno B</option>
             <option value="Turno C">Turno C</option>
             <option value="Geral">Geral</option>
           </select>
-        </label>
-        <button id="syncButton" class="button sync-button" type="button" aria-label="Sincronizar agora" title="Sincronizar agora">↻</button>
-        <button id="logoutButton" class="button button-danger" type="button" title="Encerrar sessão">Sair</button>
-      </div>
-    </div>
-  </header>
-
-  <main class="page-wrap">
-    <section id="operationView" class="screen active" aria-labelledby="operationTitle">
-      <div class="section-heading">
-        <div>
-          <h2 id="operationTitle" class="section-title">REGISTRO DE EXPEDIÇÃO</h2>
-          <p class="section-kicker">Lançamento tátil • Catálogo de Engenharia BYD</p>
+          <span id="syncStatus" class="sync-pill">● Sincronizado</span>
         </div>
-        <span id="lastRefreshLabel" class="last-refresh">Atualizado às --:--:--</span>
       </div>
 
-      <div class="card" style="margin-bottom:12px">
-        <h3 class="card-title"><span>01 / Lote ativo</span><span style="color:#38BDF8">OPERAÇÃO</span></h3>
-        <div class="batch-row">
+      <div class="topbar-actions">
+        <span id="lastRefreshLabel" class="muted-small">Aguardando sincronização…</span>
+        <div class="action-row">
+          <button id="syncButton" class="button button-ghost" type="button">↻ Atualizar</button>
+          <button id="logoutButton" class="button button-ghost" type="button">Sair</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <!-- ABA 1: OPERAÇÃO -->
+      <section id="operationView" class="screen active">
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">1. Lote Ativo</h2>
+            <div class="action-row">
+              <button id="newBatchButton" class="button button-cyan" type="button">＋ Novo Lote</button>
+              <button id="deleteBatchButton" class="button button-danger" type="button" title="Excluir lote sem lançamentos">🗑️</button>
+            </div>
+          </div>
+
+          <select id="activeLotSelect" class="control" aria-label="Lote ativo"></select>
+          <div id="batchMeta" class="meta-row"></div>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">2. Material / Componente</h2>
+            <span id="componentMetaLabel" class="meta-badge">AGUARDANDO LOTE</span>
+          </div>
+          <div id="componentGrid" class="component-grid"></div>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">3. Quantidade de Paletes</h2>
+          </div>
+
+          <div class="quantity-bar">
+            <button class="button quantity-arrow" type="button" data-step="-1" aria-label="Diminuir 1">−</button>
+            <input id="quantityInput" class="control quantity-input" type="number" inputmode="numeric" min="0" step="1" value="0">
+            <button class="button quantity-arrow" type="button" data-step="+1" aria-label="Aumentar 1">＋</button>
+          </div>
+
+          <div id="quantitySteps" class="step-row">
+            <button class="button step-btn" type="button" data-step="+1">+1</button>
+            <button class="button step-btn" type="button" data-step="+5">+5</button>
+            <button class="button step-btn" type="button" data-step="+10">+10</button>
+            <button id="metaCompleteButton" class="button button-cyan" type="button">✓ COMPLETAR SALDO (0)</button>
+          </div>
+
+          <p id="quantityWarning" class="warning-text"></p>
+          <button id="addTripItemButton" class="button button-primary" type="button" style="width:100%;margin-top:10px" disabled>＋ Adicionar Material à Carga</button>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">4. Carga da Viagem</h2>
+            <span id="tripSummary" class="meta-badge">0 itens | 0 paletes</span>
+          </div>
+          <div id="tripItemsList" class="stack"></div>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">5. Transporte e Evidência</h2>
+          </div>
+          <p id="resourceLockHint" class="muted-small" style="margin-bottom:10px"></p>
+
           <label>
-            <span class="field-label">Selecione o lote</span>
-            <select id="activeLotSelect" class="control batch-select" aria-label="Lote ativo"></select>
+            <span class="field-label">Motorista</span>
+            <select id="driverInput" class="control"></select>
           </label>
-          <button id="deleteBatchButton" class="button button-danger" type="button" style="align-self:end;padding:10px 11px" title="Excluir lote selecionado" aria-label="Excluir lote selecionado">🗑️</button>
-          <button id="newBatchButton" class="button button-primary" type="button" style="align-self:end">＋ Novo Lote</button>
-        </div>
-        <div id="batchMeta" class="batch-meta"></div>
-      </div>
+          <div id="driverChips" class="chip-row"></div>
 
-      <div class="card" style="margin-bottom:12px">
-        <h3 class="card-title"><span>02 / Material e quantidade</span><span id="componentMetaLabel" style="color:#64748B">SELECIONE O MATERIAL</span></h3>
-        <div id="componentGrid" class="component-grid"></div>
-        <div class="quantity-panel">
-          <button class="quantity-arrow" type="button" data-step="-1" aria-label="Diminuir uma palete">−</button>
-          <input id="quantityInput" class="quantity-display" type="number" inputmode="numeric" min="0" step="1" value="0" aria-label="Quantidade de paletes">
-          <button class="quantity-arrow" type="button" data-step="1" aria-label="Aumentar uma palete">＋</button>
-        </div>
-        <div id="quantitySteps" class="quantity-steps">
-          <button class="step-button" type="button" data-step="-1">−1</button>
-          <button class="step-button plus" type="button" data-step="1">+1</button>
-          <button class="step-button plus" type="button" data-step="5">+5</button>
-          <button class="step-button plus" type="button" data-step="10">+10</button>
-          <button class="step-button plus" type="button" data-step="30">+30</button>
-          <button id="metaCompleteButton" class="step-button meta" type="button">✓ COMPLETAR SALDO (0)</button>
-        </div>
-        <p id="quantityWarning" class="balance-warning" role="alert"></p>
-        <button id="addTripItemButton" class="button button-cyan" type="button" style="width:100%;margin-top:10px">＋ Adicionar Material à Carga</button>
-        <div class="card" style="margin-top:12px;padding:12px;background:#0B1324">
-          <h3 class="card-title" style="margin-bottom:8px"><span>Itens desta Viagem</span><span id="tripSummary" style="color:#38BDF8">0 itens | 0 paletes</span></h3>
-          <div id="tripItemsList" class="trip-items"></div>
-        </div>
-      </div>
+          <label style="margin-top:12px;display:block">
+            <span class="field-label">Frota / Rebocador</span>
+            <select id="fleetInput" class="control"></select>
+          </label>
+          <div id="fleetChips" class="chip-row"></div>
 
-      <div class="card" style="margin-bottom:12px">
-        <h3 class="card-title"><span>03 / Cabeçalho da Viagem</span><span style="color:#64748B">DADOS COMPARTILHADOS</span></h3>
-        <div class="driver-fleet-grid">
-          <div>
-            <label class="field-label" for="driverInput">Motorista</label>
-            <div id="driverChips" class="choice-chips"></div>
-            <input id="driverInput" class="control" type="text" list="driverOptions" autocomplete="off" placeholder="Escolha ou digite">
-            <datalist id="driverOptions"></datalist>
+          <div class="photo-box">
+            <label class="button button-ghost" for="photoInput">📷 Anexar Foto (Opcional)</label>
+            <input id="photoInput" type="file" accept="image/*" capture="environment" hidden>
+            <span id="photoHint" class="muted-small">Foto comprimida até 1024 px</span>
+            <button id="removePhotoButton" class="button button-danger" type="button" hidden>Remover</button>
           </div>
-          <div>
-            <label class="field-label" for="fleetInput">Frota</label>
-            <div id="fleetChips" class="choice-chips"></div>
-            <input id="fleetInput" class="control" type="text" list="fleetOptions" autocomplete="off" placeholder="Escolha ou digite">
-            <datalist id="fleetOptions"></datalist>
+          <img id="photoPreview" class="photo-preview" alt="Pré-visualização da evidência">
+
+          <div class="submit-grid">
+            <button id="saveRecordButton" class="button button-success" type="button">✓ Gravar Viagem</button>
+            <button id="shareCurrentButton" class="button button-cyan" type="button">📲 WhatsApp</button>
           </div>
-        </div>
-      </div>
+        </article>
 
-      <div class="card" style="margin-bottom:12px">
-        <h3 class="card-title"><span>04 / Evidência fotográfica</span><span style="color:#64748B">OPCIONAL</span></h3>
-        <div class="evidence-row">
-          <label for="photoInput" class="button button-cyan">📷 Abrir câmera</label>
-          <span id="photoHint" class="photo-hint">Foto comprimida até 1024 px</span>
-          <input id="photoInput" class="file-input" type="file" accept="image/*" capture="environment">
-        </div>
-        <img id="photoPreview" class="photo-preview" alt="Prévia da evidência fotográfica">
-        <button id="removePhotoButton" class="button button-danger" type="button" hidden style="margin-top:8px">Remover foto</button>
-      </div>
-
-      <div class="action-grid" style="margin-bottom:20px">
-        <button id="saveRecordButton" class="button button-green" type="button">✅ 1. Gravar Viagem na Planilha</button>
-        <button id="shareCurrentButton" class="button button-cyan" type="button">📲 2. Compartilhar Foto + Relatório WhatsApp</button>
-      </div>
-
-      <section class="card" style="margin-bottom:14px">
-        <div class="section-heading">
-          <div>
-            <h2 class="section-title" style="font-size:15px">📋 Materiais Pendentes no Pátio (Lotes Andando)</h2>
-            <p class="section-kicker">Saldo acumulado entre turnos • Toque em um componente para completar</p>
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">Lotes Pendentes no Pátio</h2>
           </div>
-        </div>
-        <div id="pendingLotsList" class="pending-list"></div>
+          <div id="pendingLotsList" class="stack"></div>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">Histórico do Turno (Hoje)</h2>
+          </div>
+          <div id="historyList" class="stack"></div>
+        </article>
       </section>
 
-      <div class="section-heading">
-        <div>
-          <h2 class="section-title" style="font-size:15px">HISTÓRICO DO TURNO</h2>
-          <p class="section-kicker">Lançamentos preservados • Estorno com soft delete</p>
-        </div>
-      </div>
-      <div id="historyList" class="history-list"></div>
-    </section>
+      <!-- ABA 2: COCKPIT GERENCIAL -->
+      <section id="cockpitView" class="screen admin-only" hidden>
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">Cockpit Gerencial · Entrega de Materiais</h2>
+            <button id="copyChineseReportButton" class="button button-cyan" type="button">📋 Relatório Bilíngue (PT/ZH)</button>
+          </div>
+          <p id="cockpitHeaderMeta" class="muted-small"></p>
+          <div class="filter-row">
+            <input id="cockpitDateFilter" class="control" type="date" aria-label="Filtrar data">
+            <select id="cockpitShiftFilter" class="control" aria-label="Filtrar turno">
+              <option value="ALL">Todos os Turnos</option>
+              <option value="Turno A">Turno A</option>
+              <option value="Turno B">Turno B</option>
+              <option value="Turno C">Turno C</option>
+            </select>
+          </div>
+        </article>
 
-    <section id="cockpitView" class="screen" aria-labelledby="cockpitHeading">
-      <div class="section-heading">
-        <div>
-          <h2 id="cockpitHeading" class="section-title">COCKPIT LOGÍSTICO</h2>
-          <p class="section-kicker">Relatório diário de expedição • visão executiva</p>
-        </div>
-        <button id="exportPngButton" class="button button-primary" type="button">📸 Gerar Foto</button>
-      </div>
-      <div class="card cockpit-controls">
-        <div class="cockpit-controls-row">
-          <label class="field-label" for="operatorNotes" style="margin:0">Observações do relatório (editável)</label>
-          <button id="resetNotesButton" class="button" type="button" style="min-height:34px;padding:6px 9px;font-size:10px">Usar resumo automático</button>
-        </div>
-        <textarea id="operatorNotes" class="control" placeholder="Resumo automático operacional..."></textarea>
-        <p class="help-text">Edite as observações antes de gerar a imagem. As demais métricas são calculadas pelos lançamentos do dia e turno selecionado.</p>
-      </div>
-      <div class="report-scroll">
-        <div id="cockpitContent" aria-label="Relatório diário de expedição BYD">
-          <header class="report-header">
-            <span class="byd-mark report-logo">BYD</span>
-            <div>
-              <h2 class="report-title">COCKPIT LOGÍSTICO - ENTREGA DE MATERIAIS</h2>
-              <p class="report-chinese">物流驾驶舱 - 物料配送</p>
+        <div id="cockpitKpiGrid" class="kpi-grid"></div>
+
+        <article class="card">
+          <h3 class="card-title">Progresso dos Lotes</h3>
+          <div id="cockpitLotsGrid" class="stack"></div>
+        </article>
+
+        <article class="card">
+          <h3 class="card-title">Volume por Modelo</h3>
+          <div id="cockpitModelsGrid" class="stack"></div>
+        </article>
+
+        <article class="card">
+          <h3 class="card-title">Produtividade por Motorista</h3>
+          <div id="cockpitDriversList" class="stack"></div>
+        </article>
+
+        <article class="card">
+          <h3 class="card-title">Resumo Bilíngue (Português / 中文)</h3>
+          <pre id="cockpitBilingualCard" class="bilingual-box"></pre>
+        </article>
+
+        <article class="card">
+          <h3 class="card-title">Auditoria de Lançamentos</h3>
+          <div class="table-wrap">
+            <table class="audit-table">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Turno</th>
+                  <th>Lote / Material</th>
+                  <th>Qtd</th>
+                  <th>Motorista / Frota</th>
+                  <th>Operador</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="cockpitTableBody"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <!-- ABA 3: CONFIGURAÇÕES E CADASTROS -->
+      <section id="settingsView" class="screen admin-only" hidden>
+        <!-- GOVERNANÇA (ADMIN GERAL) -->
+        <article class="card admin-general-only" hidden>
+          <h2 class="card-title">Governança &amp; Espelho Planilha</h2>
+          <form id="governanceForm" class="stack">
+            <label>
+              <span class="field-label">URL do Google Apps Script (Espelho)</span>
+              <input id="settingsApiUrl" class="control" type="url" placeholder="https://script.google.com/macros/s/.../exec">
+            </label>
+            <label>
+              <span class="field-label">Coordenador do Setor</span>
+              <input id="settingsCoordinator" class="control" type="text" maxlength="80">
+            </label>
+            <label>
+              <span class="field-label">Liderança do Turno</span>
+              <input id="settingsLeadership" class="control" type="text" maxlength="80">
+            </label>
+            <div class="action-row">
+              <button class="button button-primary" type="submit">Salvar Governança</button>
+              <button id="testConnectionButton" class="button button-cyan" type="button">Testar Conexão</button>
             </div>
-            <span class="report-mark-spacer" aria-hidden="true"></span>
-          </header>
-          <div class="report-ribbon">RELATÓRIO DIÁRIO DE EXPEDIÇÃO / 每日发运报告</div>
-          <div id="governanceGrid" class="governance-grid"></div>
-          <div id="kpiGrid" class="kpi-grid"></div>
-          <h3 class="table-title">ACOMPANHAMENTO DOS LOTES / 批次跟踪表</h3>
-          <table class="report-table">
-            <thead>
-              <tr>
-                <th>Nº / 序号</th>
-                <th>LOTE ID / 批次号</th>
-                <th>META / 目标</th>
-                <th>ENVIADO / 已发</th>
-                <th>SALDO / 待发</th>
-                <th>% CONCLUSÃO</th>
-                <th>STATUS OPERACIONAL / 运行状态</th>
-              </tr>
-            </thead>
-            <tbody id="lotTable"></tbody>
-          </table>
-          <div class="observation-wrap">
-            <h3 class="observation-title">OBSERVAÇÕES OPERACIONAIS / 运行备注</h3>
-            <p id="observationText" class="observation-text"></p>
-            <span class="watermark" aria-hidden="true">BYD</span>
-          </div>
-          <footer class="report-footer">
-            <span>BYD • LOGÍSTICA INDUSTRIAL</span>
-            <span id="reportGeneratedAt"></span>
-          </footer>
-        </div>
-      </div>
-      <button id="exportShareButton" class="button button-primary" type="button" style="width:100%;margin-top:12px">📸 Gerar Foto do Relatório e Enviar WhatsApp</button>
-    </section>
+          </form>
+        </article>
 
-    <section id="settingsView" class="screen" aria-labelledby="settingsHeading">
-      <div class="section-heading">
-        <div>
-          <h2 id="settingsHeading" class="section-title">⚙️ CONFIGURAÇÕES</h2>
-          <p class="section-kicker">Gestão por perfil e turno vinculado</p>
-        </div>
-      </div>
-
-      <div class="card config-block">
-        <h3 class="card-title"><span>01 / Criar e gerenciar logins</span><span style="color:#38BDF8">CONFIG_USUARIOS</span></h3>
-        <form id="userForm">
-          <input id="userOriginalMatricula" type="hidden" value="">
-          <div class="settings-grid">
-            <label>
-              <span class="field-label">Nome</span>
-              <input id="newUserName" class="control" required maxlength="100" placeholder="Nome do funcionário">
-            </label>
-            <label>
-              <span class="field-label">Matrícula</span>
-              <input id="newUserMatricula" class="control" required minlength="3" maxlength="30" autocomplete="off" placeholder="Matrícula">
-            </label>
-            <label>
-              <span class="field-label">PIN (4 dígitos)</span>
-              <input id="newUserPin" class="control" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" required autocomplete="new-password" placeholder="Novo PIN">
-            </label>
-            <label>
-              <span class="field-label">Perfil</span>
-              <select id="newUserRole" class="control" required>
-                <option value="OPERADOR">OPERADOR</option>
-                <option value="LIDER_TURNO">LIDER_TURNO</option>
-                <option value="ADMIN_GERAL">ADMIN_GERAL</option>
-              </select>
-            </label>
-            <label>
-              <span class="field-label">Turno vinculado</span>
-              <select id="newUserShift" class="control" required>
-                <option value="TODOS">TODOS</option>
-                <option value="Turno A">Turno A</option>
-                <option value="Turno B">Turno B</option>
-                <option value="Turno C">Turno C</option>
-              </select>
-            </label>
-            <label>
-              <span class="field-label">Acesso ativo</span>
-              <select id="newUserActive" class="control" required>
-                <option value="SIM">SIM</option>
-                <option value="NAO">NAO</option>
-              </select>
-            </label>
-          </div>
-          <div class="settings-actions">
-            <button id="createUserButton" class="button button-primary" type="submit">＋ Cadastrar funcionário</button>
-            <button id="cancelUserEditButton" class="button" type="button" hidden>Cancelar edição</button>
-          </div>
-        </form>
-        <p id="userManagementStatus" class="config-note"></p>
-        <div id="usersList" class="users-list"></div>
-      </div>
-
-      <div id="engineeringSettings" class="card config-block admin-general-only">
-        <h3 class="card-title"><span>02 / Materiais e metas de engenharia</span><span style="color:#38BDF8">CADASTRO_MODELOS</span></h3>
-        <div class="settings-model-picker">
-          <label>
-            <span class="field-label">Modelo base</span>
+        <!-- MODELOS E METAS (ADMIN GERAL) -->
+        <article class="card admin-general-only" hidden>
+          <h2 class="card-title">Modelos e Metas de Paletes</h2>
+          <div class="action-row" style="margin-bottom:10px">
             <select id="settingsModelSelect" class="control"></select>
-          </label>
-          <button id="loadModelButton" class="button" type="button" style="align-self:end">Carregar</button>
-        </div>
-        <div id="modelComponentsEditor" class="dialog-fields"></div>
-        <div class="settings-actions">
-          <button id="saveModelButton" class="button button-primary" type="button">Salvar modelo e metas</button>
-        </div>
-      </div>
+            <button id="loadModelButton" class="button button-ghost" type="button">Carregar</button>
+          </div>
+          <div id="modelComponentsEditor" class="stack"></div>
+          <button id="saveModelButton" class="button button-primary" type="button" style="margin-top:10px;width:100%">Salvar Metas do Modelo</button>
+        </article>
 
-      <div class="card config-block">
-        <h3 class="card-title"><span>03 / Conexão Google Sheets e governança</span><span style="color:#38BDF8">INTEGRAÇÃO</span></h3>
-        <form id="governanceForm">
-          <div class="dialog-fields">
-            <label class="admin-general-only">
-              <span class="field-label">URL do Google Apps Script</span>
-              <input id="settingsApiUrl" class="control" type="url" autocomplete="url" placeholder="URL atual preservada se não alterar">
-            </label>
-            <div class="settings-grid">
-              <label class="admin-general-only">
-                <span class="field-label">Coordenador</span>
-                <input id="settingsCoordinator" class="control" required>
-              </label>
-              <label class="admin-general-only">
-                <span class="field-label">Liderança</span>
-                <input id="settingsLeadership" class="control" required>
+        <!-- MOTORISTAS E FROTAS POR TURNO -->
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">Motoristas e Frotas do Turno</h2>
+            <select id="resourceShiftFilter" class="control compact-select admin-general-only" hidden>
+              <option value="ALL">Todos os Turnos</option>
+              <option value="Turno A">Turno A</option>
+              <option value="Turno B">Turno B</option>
+              <option value="Turno C">Turno C</option>
+            </select>
+          </div>
+          <p id="resourceManagementStatus" class="muted-small" style="margin-bottom:10px"></p>
+
+          <form id="resourceForm" class="stack">
+            <input id="resourceEditId" type="hidden">
+            <div class="two-col">
+              <label>
+                <span class="field-label">Tipo</span>
+                <select id="resourceType" class="control">
+                  <option value="MOTORISTA">MOTORISTA</option>
+                  <option value="FROTA">FROTA / REBOCADOR</option>
+                </select>
               </label>
               <label>
-                <span class="field-label">Motoristas padrão</span>
-                <textarea id="settingsDrivers" class="control" rows="3" required></textarea>
-              </label>
-              <label>
-                <span class="field-label">Frotas padrão</span>
-                <textarea id="settingsFleets" class="control" rows="3" required></textarea>
+                <span class="field-label">Turno</span>
+                <select id="resourceShift" class="control">
+                  <option value="Turno A">Turno A</option>
+                  <option value="Turno B">Turno B</option>
+                  <option value="Turno C">Turno C</option>
+                </select>
               </label>
             </div>
-          </div>
-          <div class="settings-actions">
-            <button id="testConnectionButton" class="button button-cyan admin-general-only" type="button">Testar conexão</button>
-            <button class="button button-primary" type="submit">Salvar governança</button>
-          </div>
-        </form>
-      </div>
-    </section>
-  </main>
 
-  <nav class="bottom-nav" aria-label="Navegação principal">
-    <div id="navInner" class="nav-inner">
-      <button class="nav-button active" type="button" data-view="operation">▣ &nbsp; OPERAÇÃO</button>
-      <button class="nav-button admin-only" type="button" data-view="cockpit">▤ &nbsp; COCKPIT</button>
-      <button class="nav-button admin-only" type="button" data-view="settings">⚙️ &nbsp; CONFIGURAÇÕES</button>
-    </div>
-  </nav>
+            <div class="two-col">
+              <label>
+                <span class="field-label">Nome ou Código da Frota</span>
+                <input id="resourceName" class="control" type="text" maxlength="60" placeholder="Ex: GENILSON ou FROTA-17" required>
+              </label>
+              <label>
+                <span class="field-label">Status</span>
+                <select id="resourceActive" class="control">
+                  <option value="SIM">ATIVO</option>
+                  <option value="NAO">BLOQUEADO</option>
+                </select>
+              </label>
+            </div>
 
-  <dialog id="batchModal">
-    <form id="batchForm" class="dialog-body">
-      <div class="dialog-title-row">
-        <h2 class="dialog-title">Abrir lote operacional</h2>
-        <button class="dialog-close" type="button" data-close="batchModal" aria-label="Fechar">×</button>
+            <div class="action-row">
+              <button id="saveResourceButton" class="button button-primary" type="submit">＋ Cadastrar motorista / frota</button>
+              <button id="cancelResourceEditButton" class="button button-ghost" type="button" hidden>Cancelar</button>
+            </div>
+          </form>
+
+          <div id="resourcesList" class="stack" style="margin-top:14px"></div>
+        </article>
+
+        <!-- EQUIPE / OPERADORES POR TURNO -->
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">Equipe e Acessos do Turno</h2>
+            <select id="userShiftFilter" class="control compact-select admin-general-only" hidden>
+              <option value="ALL">Todos os Turnos</option>
+              <option value="Turno A">Turno A</option>
+              <option value="Turno B">Turno B</option>
+              <option value="Turno C">Turno C</option>
+            </select>
+          </div>
+          <p id="userManagementStatus" class="muted-small" style="margin-bottom:10px"></p>
+
+          <form id="userForm" class="stack">
+            <input id="userOriginalMatricula" type="hidden">
+            <div class="two-col">
+              <label>
+                <span class="field-label">Matrícula</span>
+                <input id="newUserMatricula" class="control" type="text" maxlength="30" required>
+              </label>
+              <label>
+                <span class="field-label">PIN (4 dígitos)</span>
+                <input id="newUserPin" class="control" type="text" inputmode="numeric" pattern="\d{4}" maxlength="4" required>
+              </label>
+            </div>
+
+            <label>
+              <span class="field-label">Nome Completo</span>
+              <input id="newUserName" class="control" type="text" maxlength="80" required>
+            </label>
+
+            <div class="three-col">
+              <label>
+                <span class="field-label">Perfil</span>
+                <select id="newUserRole" class="control">
+                  <option value="OPERADOR">OPERADOR</option>
+                  <option value="LIDER_TURNO">LIDER_TURNO</option>
+                  <option value="ADMIN_GERAL">ADMIN_GERAL</option>
+                </select>
+              </label>
+              <label>
+                <span class="field-label">Turno</span>
+                <select id="newUserShift" class="control">
+                  <option value="Turno A">Turno A</option>
+                  <option value="Turno B">Turno B</option>
+                  <option value="Turno C">Turno C</option>
+                  <option value="TODOS">TODOS</option>
+                </select>
+              </label>
+              <label>
+                <span class="field-label">Status</span>
+                <select id="newUserActive" class="control">
+                  <option value="SIM">ATIVO</option>
+                  <option value="NAO">BLOQUEADO</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="action-row">
+              <button id="createUserButton" class="button button-primary" type="submit">＋ Cadastrar funcionário</button>
+              <button id="cancelUserEditButton" class="button button-ghost" type="button" hidden>Cancelar</button>
+            </div>
+          </form>
+
+          <div id="usersList" class="stack" style="margin-top:14px"></div>
+        </article>
+      </section>
+    </main>
+
+    <!-- NAVEGAÇÃO INFERIOR -->
+    <nav class="bottom-nav">
+      <div id="navInner" class="nav-inner">
+        <button class="nav-button active" type="button" data-view="operation">📦 Operação</button>
+        <button class="nav-button admin-only" type="button" data-view="cockpit" hidden>📊 Cockpit</button>
+        <button class="nav-button admin-only" type="button" data-view="settings" hidden>⚙️ Cadastros</button>
       </div>
-      <div class="dialog-fields">
-        <label>
-          <span class="field-label">Modelo base</span>
-          <select id="newLotModel" class="control" required></select>
-        </label>
-        <label>
-          <span class="field-label">Nome do lote</span>
-          <input id="newLotName" class="control" type="text" maxlength="80" required placeholder="Ex.: EQE 285 ou SC3HBL 6">
-        </label>
-      </div>
-      <p class="help-text">As metas dos componentes e a meta total são vinculadas automaticamente ao modelo escolhido.</p>
-      <div class="dialog-actions">
-        <button class="button" type="button" data-close="batchModal">Cancelar</button>
-        <button class="button button-primary" type="submit">Criar e selecionar lote</button>
+    </nav>
+  </div>
+
+  <!-- MODAL: NOVO LOTE -->
+  <dialog id="batchModal" class="modal">
+    <form id="batchForm" class="stack">
+      <h3 class="card-title">Criar Novo Lote</h3>
+      <label>
+        <span class="field-label">Modelo Base</span>
+        <select id="newLotModel" class="control"></select>
+      </label>
+      <label>
+        <span class="field-label">Identificação do Lote</span>
+        <input id="newLotName" class="control" type="text" maxlength="60" placeholder="Ex: LOTE 01 - HA2" required>
+      </label>
+      <div class="action-row">
+        <button class="button button-primary" type="submit">Criar Lote</button>
+        <button class="button button-ghost" type="button" data-close="batchModal">Cancelar</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="reverseModal">
-    <form id="reverseForm" class="dialog-body">
-      <div class="dialog-title-row">
-        <h2 class="dialog-title">Estornar lançamento</h2>
-        <button class="dialog-close" type="button" data-close="reverseModal" aria-label="Fechar">×</button>
-      </div>
+  <!-- MODAL: ESTORNAR LANÇAMENTO -->
+  <dialog id="reverseModal" class="modal">
+    <form id="reverseForm" class="stack">
+      <h3 class="card-title">Estornar Lançamento</h3>
       <input id="reverseRecordId" type="hidden">
       <label>
-        <span class="field-label">Motivo do estorno</span>
-        <textarea id="reverseReasonInput" class="control" rows="3" maxlength="240" required placeholder="Descreva o motivo para manter o histórico auditável"></textarea>
+        <span class="field-label">Motivo do Estorno</span>
+        <input id="reverseReasonInput" class="control" type="text" maxlength="140" placeholder="Informe o motivo" required>
       </label>
-      <p class="help-text">O registro não será apagado. Apenas o status e o motivo do estorno serão atualizados na planilha.</p>
-      <div class="dialog-actions">
-        <button class="button" type="button" data-close="reverseModal">Cancelar</button>
-        <button id="confirmReverseButton" class="button button-danger" type="submit">Confirmar estorno</button>
+      <div class="action-row">
+        <button id="confirmReverseButton" class="button button-danger" type="submit">Confirmar Estorno</button>
+        <button class="button button-ghost" type="button" data-close="reverseModal">Cancelar</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="editModal">
-    <form id="editForm" class="dialog-body">
-      <div class="dialog-title-row">
-        <h2 class="dialog-title">Editar lançamento existente</h2>
-        <button class="dialog-close" type="button" data-close="editModal" aria-label="Fechar">×</button>
-      </div>
+  <!-- MODAL: EDITAR LANÇAMENTO -->
+  <dialog id="editModal" class="modal">
+    <form id="editForm" class="stack">
+      <h3 class="card-title">Editar Lançamento</h3>
       <input id="editRecordId" type="hidden">
-      <div class="dialog-fields">
-        <label>
-          <span class="field-label">Lote</span>
-          <input id="editLotName" class="control" required maxlength="80">
-        </label>
-        <div class="edit-component-picker">
-          <label>
-            <span class="field-label">Modelo base</span>
-            <select id="editModelSelect" class="control" required></select>
-          </label>
-          <label>
-            <span class="field-label">Material / Componente</span>
-            <select id="editComponentSelect" class="control" required></select>
-          </label>
-        </div>
-        <label>
-          <span class="field-label">Quantidade (paletes)</span>
-          <input id="editQuantityInput" class="control" type="number" min="1" step="1" required inputmode="numeric">
-        </label>
-        <label>
-          <span class="field-label">Motorista</span>
-          <input id="editDriverInput" class="control" list="driverOptions" maxlength="100">
-        </label>
-        <label>
-          <span class="field-label">Frota</span>
-          <input id="editFleetInput" class="control" list="fleetOptions" maxlength="100">
-        </label>
-      </div>
-      <p class="help-text">A edição atualiza o ID existente e grava o operador e horário na auditoria da planilha.</p>
-      <div class="dialog-actions">
-        <button class="button" type="button" data-close="editModal">Cancelar</button>
-        <button id="saveEditButton" class="button button-primary" type="submit">Salvar alterações</button>
+      <label>
+        <span class="field-label">Lote</span>
+        <input id="editLotName" class="control" type="text" maxlength="60" required>
+      </label>
+      <label>
+        <span class="field-label">Modelo Base</span>
+        <select id="editModelSelect" class="control"></select>
+      </label>
+      <label>
+        <span class="field-label">Componente</span>
+        <select id="editComponentSelect" class="control"></select>
+      </label>
+      <label>
+        <span class="field-label">Quantidade de Paletes</span>
+        <input id="editQuantityInput" class="control" type="number" min="1" step="1" required>
+      </label>
+      <label>
+        <span class="field-label">Motorista</span>
+        <select id="editDriverInput" class="control"></select>
+      </label>
+      <label>
+        <span class="field-label">Frota</span>
+        <select id="editFleetInput" class="control"></select>
+      </label>
+      <div class="action-row">
+        <button id="saveEditButton" class="button button-primary" type="submit">Salvar Alteração</button>
+        <button class="button button-ghost" type="button" data-close="editModal">Cancelar</button>
       </div>
     </form>
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  </div>
 
-  <script src="db.js?v=6"></script>
-  <script src="cockpit.js?v=6"></script>
-  <script src="app.js?v=6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./db.js"></script>
+  <script src="./cockpit.js"></script>
+  <script src="./app.js"></script>
 </body>
 </html>

@@ -8,12 +8,12 @@
     SC3: { total: 120, components: [{ name: 'Aramados baixos', meta: 30 }, { name: 'Aramados altos', meta: 30 }, { name: 'Caixarias', meta: 60 }] },
     PBP: { total: 387, components: [{ name: 'Aramados altos e baixos', meta: 60 }, { name: 'Caixarias', meta: 87 }, { name: 'Jantes', meta: 240 }] }
   };
-  const DEFAULT_DRIVERS = ['ANGELO', 'GENILSON', 'ELIVALDO', 'JUCIE', 'SIDNEI', 'CLEITON', 'EDVALDO', 'CARLEUSON'];
-  const DEFAULT_FLEETS = ['FROTA-17', 'FROTA-19', 'REBOCADOR'];
+
   const LOTS_KEY = 'byd_active_lots_v1';
   const LOCAL_LOTS_KEY = 'byd_lotes';
   const UI_CONFIG_KEY = 'byd_ui_governance_v1';
   const SELECTED_LOT_KEY = 'byd_selected_lot_v1';
+
   const el = (id) => document.getElementById(id);
   const escapeHtml = (value) => String(value).replace(/[&<>"']/g,
     (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
@@ -80,9 +80,7 @@
   let CATALOG = cloneCatalog(DEFAULT_CATALOG);
   let uiConfig = {
     coordinator: 'Anderson Andrade',
-    leadership: 'Daniela Menezes',
-    drivers: DEFAULT_DRIVERS.slice(),
-    fleets: DEFAULT_FLEETS.slice()
+    leadership: 'Daniela Menezes'
   };
   let session = null;
   let SESSAO = null;
@@ -99,6 +97,7 @@
   let tripItems = [];
   let lastSavedTrip = [];
   let adminUsers = [];
+  let allResources = DB.getCachedResources();
   let adminDataOffline = false;
   let selectedLotId = localStorage.getItem(SELECTED_LOT_KEY) || '';
   let editingUserOriginal = '';
@@ -154,6 +153,10 @@
     return session && session.Turno_Vinculado ? session.Turno_Vinculado : currentShift();
   }
 
+  function turnKey(value) {
+    return String(value || '').replace(/^Turno\s+/i, '').trim().toUpperCase();
+  }
+
   function loginError(message) {
     el('loginFeedback').textContent = message;
   }
@@ -161,6 +164,7 @@
   function showLogin(message = '') {
     if (pollingTimer) clearInterval(pollingTimer);
     pollingTimer = null;
+    DB.stopRealtime();
     session = null;
     SESSAO = null;
     DB.clearSession();
@@ -194,6 +198,7 @@
     el('navInner').style.gridTemplateColumns = admin ? 'repeat(3, minmax(0, 1fr))' : '1fr';
     renderSessionHeader();
     applyUserFormPermissions();
+    applyResourceFormPermissions();
     if (!admin && !el('operationView').classList.contains('active')) {
       document.querySelectorAll('.screen').forEach((screen) => screen.classList.remove('active'));
       el('operationView').classList.add('active');
@@ -208,6 +213,7 @@
     el('appShell').hidden = false;
     renderAccess();
     resetUserForm();
+    resetResourceForm();
     mudarAba('operation');
   }
 
@@ -234,23 +240,9 @@
       return;
     }
     button.disabled = true;
-    loginError('Validando credenciais…');
+    loginError('Validando acesso no banco...');
     try {
-      let authenticated;
-      if (navigator.onLine && DB.getApiUrl()) {
-        try {
-          authenticated = await DB.authenticate({ Matricula: matricula, PIN: pin, Turno: turno });
-        } catch (error) {
-          if (['INVALID_CREDENTIALS', 'FORBIDDEN', 'INVALID_INPUT', 'RATE_LIMITED'].includes(error.code)) throw error;
-          authenticated = offlineFallback(matricula, pin, turno);
-        }
-      } else {
-        authenticated = offlineFallback(matricula, pin, turno);
-      }
-
-      if (!authenticated || (!authenticated.user && !authenticated.Perfil)) {
-        throw new Error('Sem conexão com o Google Sheets. Use um dos logins autorizados no cache local.');
-      }
+      const authenticated = await DB.authenticate({ Matricula: matricula, PIN: pin, Turno: turno });
       if (authenticated.expiresIn) authenticated.expiresAt = Date.now() + authenticated.expiresIn * 1000;
       session = DB.setSession(authenticated);
       SESSAO = session;
@@ -269,37 +261,6 @@
     }
   }
 
-  function offlineFallback(matricula, pin, turno) {
-    const user = DB.getCachedUsers().find((item) =>
-      String(item.Matricula) === matricula &&
-      String(item.PIN) === pin &&
-      String(item.Ativo).toUpperCase() === 'SIM'
-    );
-    if (!user) return null;
-    const role = String(user.Perfil || '').toUpperCase();
-    const linked = user.Turno_Vinculado || 'Turno B';
-    if (!['ADMIN_GERAL','LIDER_TURNO','OPERADOR'].includes(role)) return null;
-    const selectedTurn = role === 'ADMIN_GERAL' ? turno : linked;
-    return {
-      token: '',
-      localFallback: true,
-      expiresAt: Date.now() + 8 * 60 * 60 * 1000,
-      Matricula: String(user.Matricula),
-      Nome: String(user.Nome || user.Nome_Completo || ''),
-      Perfil: role,
-      Turno: selectedTurn,
-      Turno_Vinculado: linked,
-      user: {
-        Matricula: String(user.Matricula),
-        Nome: String(user.Nome || user.Nome_Completo || ''),
-        Nome_Completo: String(user.Nome || user.Nome_Completo || ''),
-        Perfil: role,
-        Turno_Vinculado: linked,
-        Ativo: user.Ativo
-      }
-    };
-  }
-
   async function loadAuthenticatedData() {
     renderAccess();
     try {
@@ -310,6 +271,7 @@
       if (goToLoginIfUnauthorized(error)) return;
       showToast(error.message || 'Não foi possível sincronizar os dados.');
       records = DB.getCache();
+      allResources = DB.getCachedResources();
       activeLots = readCachedLots();
       const cachedProgress = DB.getLotProgress();
       lotProgress = cachedProgress.length ? cachedProgress : deriveLocalProgress();
@@ -319,23 +281,12 @@
     SESSAO = session;
     loadGovernanceConfig();
     renderModelSelect();
-    renderChoiceChips('driverChips', 'driverOptions', uiConfig.drivers, 'driverInput');
-    renderChoiceChips('fleetChips', 'fleetOptions', uiConfig.fleets, 'fleetInput');
+    renderOperationResources();
     fillGovernanceForm();
     renderUsers();
+    renderResources();
     refreshViews();
-    startPolling();
-  }
-
-  async function loadAdminData() {
-    const data = await DB.fetchAdminData();
-    applySnapshot({
-      TB_Apontamentos: data.records,
-      Config_Usuarios: data.users,
-      Cadastro_Modelos: data.models,
-      Cadastro_Lista_Lotes: data.lots,
-      offline: data.offline
-    });
+    startRealtimeAndPolling();
   }
 
   function offlineUsers() {
@@ -343,16 +294,100 @@
   }
 
   function visibleUsers(users) {
-    if (isGeneralAdmin()) return users;
+    if (isGeneralAdmin()) {
+      const filter = el('userShiftFilter') ? el('userShiftFilter').value : 'ALL';
+      if (filter === 'ALL') return users;
+      return users.filter((u) => turnKey(u.Turno_Vinculado) === turnKey(filter));
+    }
     if (isLeader()) {
-      return users.filter((user) => String(user.Perfil).toUpperCase() === 'OPERADOR' &&
-        turnKey(user.Turno_Vinculado) === turnKey(linkedShift()));
+      return users.filter((user) =>
+        String(user.Perfil).toUpperCase() === 'OPERADOR' &&
+        turnKey(user.Turno_Vinculado) === turnKey(linkedShift())
+      );
     }
     return [];
   }
 
-  function turnKey(value) {
-    return String(value || '').replace(/^Turno\s+/i, '').toUpperCase();
+  function visibleResourcesForAdmin(resources) {
+    if (isGeneralAdmin()) {
+      const filter = el('resourceShiftFilter') ? el('resourceShiftFilter').value : 'ALL';
+      if (filter === 'ALL') return resources;
+      return resources.filter((r) => turnKey(r.Turno_Vinculado) === turnKey(filter));
+    }
+    if (isLeader()) {
+      return resources.filter((r) => turnKey(r.Turno_Vinculado) === turnKey(linkedShift()));
+    }
+    return [];
+  }
+
+  function allowedResourcesForShift(tipo, targetShift = currentShift()) {
+    const active = allResources.filter((r) =>
+      String(r.Tipo).toUpperCase() === tipo &&
+      String(r.Ativo).toUpperCase() === 'SIM'
+    );
+    if (targetShift === 'Geral') {
+      return active;
+    }
+    const shiftKey = turnKey(targetShift);
+    return active.filter((r) => {
+      const resTurn = turnKey(r.Turno_Vinculado);
+      return resTurn === shiftKey || resTurn === 'TODOS';
+    });
+  }
+
+  function renderOperationResources() {
+    const shift = currentShift();
+    const drivers = allowedResourcesForShift('MOTORISTA', shift);
+    const fleets = allowedResourcesForShift('FROTA', shift);
+
+    const prevDriver = el('driverInput').value;
+    const prevFleet = el('fleetInput').value;
+
+    const formatOptionLabel = (item) =>
+      shift === 'Geral' ? `${item.Nome} (${item.Turno_Vinculado})` : item.Nome;
+
+    const driverSelect = el('driverInput');
+    driverSelect.replaceChildren(
+      new Option(drivers.length ? 'Selecione o motorista...' : `Nenhum motorista ativo no ${shift}`, ''),
+      ...drivers.map((item) => new Option(formatOptionLabel(item), item.Nome))
+    );
+    if (drivers.some((d) => d.Nome === prevDriver)) driverSelect.value = prevDriver;
+
+    const fleetSelect = el('fleetInput');
+    fleetSelect.replaceChildren(
+      new Option(fleets.length ? 'Selecione a frota...' : `Nenhuma frota ativa no ${shift}`, ''),
+      ...fleets.map((item) => new Option(formatOptionLabel(item), item.Nome))
+    );
+    if (fleets.some((f) => f.Nome === prevFleet)) fleetSelect.value = prevFleet;
+
+    renderResourceChips('driverChips', drivers, 'driverInput');
+    renderResourceChips('fleetChips', fleets, 'fleetInput');
+
+    const hint = el('resourceLockHint');
+    if (hint) {
+      hint.textContent = (!drivers.length || !fleets.length)
+        ? `Atenção: peça ao líder do ${shift} ou ao Admin Geral para cadastrar motoristas e frotas em Configurações.`
+        : `Exibindo apenas motoristas (${drivers.length}) e frotas (${fleets.length}) autorizados para ${shift}.`;
+    }
+  }
+
+  function renderResourceChips(containerId, items, selectId) {
+    const container = el(containerId);
+    const select = el(selectId);
+    container.innerHTML = items.map((item) =>
+      `<button class="chip${select.value === item.Nome ? ' selected' : ''}" type="button" data-choice="${escapeHtml(item.Nome)}">${escapeHtml(item.Nome)}</button>`
+    ).join('');
+    container.onclick = (event) => {
+      const button = event.target.closest('[data-choice]');
+      if (!button) return;
+      select.value = button.dataset.choice;
+      container.querySelectorAll('.chip').forEach((chip) => chip.classList.toggle('selected', chip === button));
+    };
+    select.onchange = () => {
+      container.querySelectorAll('.chip').forEach((chip) =>
+        chip.classList.toggle('selected', chip.dataset.choice === select.value)
+      );
+    };
   }
 
   function applySnapshot(snapshot) {
@@ -360,6 +395,7 @@
     session = DB.getSession() || session;
     SESSAO = session;
     if (Array.isArray(snapshot.TB_Apontamentos)) records = snapshot.TB_Apontamentos;
+    if (Array.isArray(snapshot.Cadastro_Recursos_Turno)) allResources = snapshot.Cadastro_Recursos_Turno;
     if (Array.isArray(snapshot.Cadastro_Modelos)) applyModels(snapshot.Cadastro_Modelos);
     const hasAuthoritativeLots = !snapshot.offline && Array.isArray(snapshot.Cadastro_Lista_Lotes);
     if (Array.isArray(snapshot.Cadastro_Lista_Lotes)) {
@@ -385,6 +421,9 @@
     adminDataOffline = Boolean(snapshot.offline);
     renderAccess();
     if (!hasAuthoritativeLots) mergeExistingLots(lotProgress);
+    renderOperationResources();
+    renderUsers();
+    renderResources();
     renderLots();
   }
 
@@ -398,7 +437,7 @@
 
   function persistAdminCache() {
     const cached = DB.getAdminCache() || {};
-    DB.setAdminCache({ ...cached, users: adminUsers, models: modelList(), records });
+    DB.setAdminCache({ ...cached, users: adminUsers, resources: allResources, models: modelList(), records });
   }
 
   function normalizeModelKey(model) {
@@ -416,11 +455,11 @@
   }
 
   function applyModels(models) {
-    if (!Array.isArray(models)) return;
+    if (!Array.isArray(models) || !models.length) return;
     const next = cloneCatalog(DEFAULT_CATALOG);
     models.forEach((item) => {
       const key = normalizeModelKey(item.Modelo_Base);
-      if (!key || !Array.isArray(item.Componentes) || item.Componentes.length !== 3) return;
+      if (!key || !Array.isArray(item.Componentes) || item.Componentes.length < 3) return;
       const components = item.Componentes.map((component) => ({
         name: String(component.Nome || '').trim(),
         meta: Number(component.Meta)
@@ -822,7 +861,7 @@
     );
     if (!lot) {
       lot = {
-        id: progress.ID_Lote || `SHEET-${progressIndexFor(progress)}`,
+        id: progress.ID_Lote || `SHEET-${lotProgress.indexOf(progress)}`,
         name: progress.Nome_Lote,
         model: progress.Modelo_Base,
         createdAt: progress.Data_Criacao || new Date().toISOString(),
@@ -838,34 +877,6 @@
     renderLots();
     el('activeLotSelect').value = selectedLotId;
     updateQuantityDisplay();
-  }
-
-  function progressIndexFor(progress) {
-    return lotProgress.indexOf(progress);
-  }
-
-  function parseOptions(value) {
-    const list = String(value).split(/[\n,;]+/).map((item) => item.trim()).filter(Boolean);
-    return [...new Map(list.map((item) => [item.toLocaleLowerCase('pt-BR'), item])).values()];
-  }
-
-  function renderChoiceChips(containerId, datalistId, values, inputId) {
-    const container = el(containerId);
-    container.innerHTML = values.map((value) =>
-      `<button class="chip" type="button" data-choice="${escapeHtml(value)}">${escapeHtml(value)}</button>`
-    ).join('');
-    el(datalistId).replaceChildren(...values.map((value) => new Option(value, value)));
-    container.onclick = (event) => {
-      const button = event.target.closest('[data-choice]');
-      if (!button) return;
-      el(inputId).value = button.dataset.choice;
-      container.querySelectorAll('.chip').forEach((chip) => chip.classList.toggle('selected', chip === button));
-    };
-    el(inputId).oninput = () => {
-      container.querySelectorAll('.chip').forEach((chip) =>
-        chip.classList.toggle('selected', chip.dataset.choice.toLowerCase() === el(inputId).value.trim().toLowerCase())
-      );
-    };
   }
 
   function dateRef(date = new Date()) {
@@ -1034,8 +1045,15 @@
     try { pending = DB.getQueue(); } catch (_) {}
     status.classList.toggle('offline', !navigator.onLine);
     status.classList.toggle('pending', navigator.onLine && pending.length > 0);
-    status.textContent = !navigator.onLine ? `● Offline · ${pending.length} pendente(s)` :
-      pending.length ? `● ${pending.length} pendente(s)` : '● Sincronizado';
+    if (!navigator.onLine) {
+      status.textContent = `● Offline · ${pending.length} na fila`;
+    } else if (pending.length) {
+      status.textContent = `● Enviando ${pending.length} pendência(s)...`;
+    } else if (DB.isRealtimeConnected()) {
+      status.textContent = '⚡ Tempo Real (<0,3s)';
+    } else {
+      status.textContent = '● Sincronizado';
+    }
   }
 
   function setLastRefreshTime(date = new Date()) {
@@ -1061,10 +1079,23 @@
     }
   }
 
-  function startPolling() {
+  function startRealtimeAndPolling() {
+    DB.subscribeRealtime(
+      (snapshot) => {
+        applySnapshot(snapshot);
+        refreshViews();
+        setLastRefreshTime();
+      },
+      () => {
+        updateSyncStatus();
+      }
+    );
+
     if (pollingTimer) clearInterval(pollingTimer);
     if (!session) return;
-    pollingTimer = setInterval(silentSync, 15000);
+    pollingTimer = setInterval(() => {
+      if (!DB.isRealtimeConnected()) silentSync();
+    }, 6000);
   }
 
   function cockpitContext() {
@@ -1162,7 +1193,14 @@
     if (currentShift() === 'Geral') throw new Error('Selecione um turno específico antes de gravar a viagem.');
     const driver = el('driverInput').value.trim();
     const fleet = el('fleetInput').value.trim();
-    if (!driver || !fleet) throw new Error('Informe o motorista e a frota/rebocador da viagem.');
+    const allowedDrivers = allowedResourcesForShift('MOTORISTA', currentShift()).map((d) => d.Nome);
+    const allowedFleets = allowedResourcesForShift('FROTA', currentShift()).map((f) => f.Nome);
+    if (!driver || !allowedDrivers.includes(driver)) {
+      throw new Error('Selecione um motorista cadastrado para este turno.');
+    }
+    if (!fleet || !allowedFleets.includes(fleet)) {
+      throw new Error('Selecione uma frota cadastrada para este turno.');
+    }
     const totals = new Map();
     tripItems.forEach((item) => {
       const key = `${normalizeModelKey(item.Modelo_Base)}|${item.Nome_Lote.toLocaleLowerCase('pt-BR')}|${item.Componente.toLocaleLowerCase('pt-BR')}`;
@@ -1270,13 +1308,13 @@
       const payload = createTripPayload();
       try {
         await DB.sendOrQueue(payload);
-        showToast('Viagem gravada na planilha.');
+        showToast('⚡ Viagem gravada e sincronizada em tempo real!');
       } catch (error) {
         if (!queued(payload)) {
           if (goToLoginIfUnauthorized(error)) return;
           throw error;
         }
-        showToast('Sem conexão: viagem salva na fila para sincronização.');
+        showToast('Sem conexão: viagem salva na fila do celular.');
       }
       payload.itens.forEach((record) => {
         addRecordToCache(record);
@@ -1287,7 +1325,7 @@
       quantity = 0;
       renderLots();
       refreshViews();
-      silentSync();
+      setLastRefreshTime();
     } catch (error) {
       showToast(error.message || 'Não foi possível gravar a viagem.', 5000);
     } finally {
@@ -1311,7 +1349,7 @@
       DB.setCache(records);
       refreshViews();
       if (result.snapshot && !result.snapshot.offline) setLastRefreshTime();
-      showToast(`${result.sent || 0} lançamento(s)/alteração(ões) sincronizado(s).`);
+      showToast(`Sincronizado! ${result.sent || 0} pendência(s) enviada(s).`);
     } catch (error) {
       if (!goToLoginIfUnauthorized(error)) showToast(error.message || 'Falha ao sincronizar.', 5000);
     } finally {
@@ -1323,23 +1361,13 @@
   function loadGovernanceConfig() {
     const defaults = {
       coordinator: 'Anderson Andrade',
-      leadership: 'Daniela Menezes',
-      drivers: DEFAULT_DRIVERS.slice(),
-      fleets: DEFAULT_FLEETS.slice()
+      leadership: 'Daniela Menezes'
     };
     const globalConfig = safeJson(UI_CONFIG_KEY, {});
-    const turnConfig = safeJson(`${UI_CONFIG_KEY}_turn_${turnKey(currentShift())}`, {});
-    uiConfig = { ...defaults, ...globalConfig, ...turnConfig };
-    if (!Array.isArray(uiConfig.drivers)) uiConfig.drivers = DEFAULT_DRIVERS.slice();
-    if (!Array.isArray(uiConfig.fleets)) uiConfig.fleets = DEFAULT_FLEETS.slice();
+    uiConfig = { ...defaults, ...globalConfig };
   }
 
   function persistUiConfig() {
-    const key = `${UI_CONFIG_KEY}_turn_${turnKey(currentShift())}`;
-    localStorage.setItem(key, JSON.stringify({
-      drivers: uiConfig.drivers,
-      fleets: uiConfig.fleets
-    }));
     if (isGeneralAdmin()) {
       const current = safeJson(UI_CONFIG_KEY, {});
       localStorage.setItem(UI_CONFIG_KEY, JSON.stringify({
@@ -1354,20 +1382,18 @@
     el('settingsApiUrl').value = DB.getApiUrl();
     el('settingsCoordinator').value = uiConfig.coordinator;
     el('settingsLeadership').value = uiConfig.leadership;
-    el('settingsDrivers').value = uiConfig.drivers.join('\n');
-    el('settingsFleets').value = uiConfig.fleets.join('\n');
   }
 
   async function testConnection() {
     if (!isGeneralAdmin()) {
-      showToast('Somente ADMIN_GERAL pode testar a conexão da planilha.');
+      showToast('Somente ADMIN_GERAL pode testar a conexão.');
       return;
     }
     const button = el('testConnectionButton');
     button.disabled = true;
     try {
       const result = await DB.testConnection();
-      showToast(result.message || 'Conexão autenticada com sucesso.');
+      showToast(result.message || 'Conexão autenticada com sucesso.', 4500);
     } catch (error) {
       if (!goToLoginIfUnauthorized(error)) showToast(error.message || 'Falha ao testar conexão.', 5000);
     } finally {
@@ -1377,31 +1403,24 @@
 
   function saveGovernance(event) {
     event.preventDefault();
+    if (!isGeneralAdmin()) return;
     const currentUrl = DB.getApiUrl();
-    const requestedUrl = isGeneralAdmin() ? el('settingsApiUrl').value.trim() : currentUrl;
-    if (isGeneralAdmin()) {
-      uiConfig.coordinator = el('settingsCoordinator').value.trim();
-      uiConfig.leadership = el('settingsLeadership').value.trim();
-    }
-    uiConfig.drivers = parseOptions(el('settingsDrivers').value);
-    uiConfig.fleets = parseOptions(el('settingsFleets').value);
+    const requestedUrl = el('settingsApiUrl').value.trim();
+    uiConfig.coordinator = el('settingsCoordinator').value.trim();
+    uiConfig.leadership = el('settingsLeadership').value.trim();
     persistUiConfig();
-    renderChoiceChips('driverChips', 'driverOptions', uiConfig.drivers, 'driverInput');
-    renderChoiceChips('fleetChips', 'fleetOptions', uiConfig.fleets, 'fleetInput');
-    if (isGeneralAdmin() && requestedUrl && requestedUrl !== currentUrl) {
+    if (requestedUrl && requestedUrl !== currentUrl) {
       try {
         DB.setApiUrl(requestedUrl);
       } catch (error) {
         showToast(error.message, 5000);
         return;
       }
-      showLogin('URL do Apps Script alterada. Entre novamente na conexão configurada.');
-      return;
+      showToast('URL do espelho Google Sheets atualizada.');
+    } else {
+      showToast('Governança salva com sucesso.');
     }
     refreshViews();
-    showToast(isGeneralAdmin()
-      ? 'Governança salva. A URL existente do Apps Script foi preservada.'
-      : `Motoristas e frotas do ${currentShift()} salvos.`);
   }
 
   function modelComponents(model) {
@@ -1463,7 +1482,7 @@
     }
     const payload = { action: 'salvar_modelo', ...captureModelForm() };
     if (payload.Componentes.some((item) => !item.Nome || !Number.isInteger(item.Meta) || item.Meta < 0)) {
-      showToast('Informe três componentes e metas inteiras válidas.');
+      showToast('Informe componentes e metas inteiras válidas.');
       return;
     }
     const button = el('saveModelButton');
@@ -1471,13 +1490,13 @@
     try {
       try {
         await DB.sendOrQueue(payload);
-        showToast('Modelo e metas atualizados na planilha.');
+        showToast('Modelo e metas atualizados em tempo real.');
       } catch (error) {
         if (!queued(payload)) {
           if (goToLoginIfUnauthorized(error)) return;
           throw error;
         }
-        showToast('Modelo salvo na fila offline; alterações aplicadas nesta tela.');
+        showToast('Modelo salvo na fila offline.');
       }
       const updated = {
         Modelo_Base: payload.Modelo_Base,
@@ -1496,18 +1515,23 @@
     }
   }
 
+  // =========================================================================
+  // GESTÃO DE EQUIPE POR TURNO (USUARIOS)
+  // =========================================================================
   function renderUsers() {
     const container = el('usersList');
     const status = el('userManagementStatus');
-    status.textContent = adminDataOffline
-      ? 'Exibindo a última base sincronizada; alterações sem conexão ficam na fila.'
-      : `${adminUsers.length} login(s) visível(is) conforme seu perfil e turno.`;
-    adminUsers = visibleUsers(adminUsers);
-    if (!adminUsers.length) {
-      container.innerHTML = '<div class="empty-state">Nenhum operador visível para este perfil e turno.</div>';
+    const source = DB.getCachedUsers();
+    const list = visibleUsers(source);
+    adminUsers = list;
+    status.textContent = isLeader()
+      ? `Mostrando ${list.length} operador(es) vinculados ao ${linkedShift()}.`
+      : `Mostrando ${list.length} usuário(s) cadastrados.`;
+    if (!list.length) {
+      container.innerHTML = '<div class="empty-state">Nenhum funcionário encontrado para este filtro/turno.</div>';
       return;
     }
-    container.innerHTML = adminUsers.slice().sort((a, b) =>
+    container.innerHTML = list.slice().sort((a, b) =>
       String(a.Nome).localeCompare(String(b.Nome), 'pt-BR')
     ).map((user) => {
       const self = user.Matricula === session.Matricula;
@@ -1556,7 +1580,7 @@
     editingUserOriginal = '';
     el('userOriginalMatricula').value = '';
     el('userForm').reset();
-    el('newUserRole').value = isLeader() ? 'OPERADOR' : 'OPERADOR';
+    el('newUserRole').value = 'OPERADOR';
     el('newUserShift').value = isLeader()
       ? linkedShift()
       : (currentShift() === 'Geral' ? 'Turno A' : currentShift());
@@ -1593,11 +1617,11 @@
       Turno_Vinculado: String(payload.Turno_Vinculado),
       Ativo: String(payload.Ativo)
     };
-    const withoutOriginal = adminUsers.filter((user) =>
+    const all = DB.getCachedUsers().filter((user) =>
       user.Matricula !== original && user.Matricula !== updated.Matricula
     );
-    adminUsers = visibleUsers([...withoutOriginal, updated]);
-    localStorage.setItem('Config_Usuarios', JSON.stringify(adminUsers));
+    const nextAll = [...all, updated];
+    localStorage.setItem('Config_Usuarios', JSON.stringify(nextAll));
     persistAdminCache();
     renderUsers();
   }
@@ -1642,14 +1666,12 @@
         return false;
       }
       updateActiveSessionFromUser(payload);
-      if (result.session) {
-        session = DB.setSession({ ...session, ...result.session, user: result.session });
-        SESSAO = session;
+      if (Array.isArray(result.users)) {
+        localStorage.setItem('Config_Usuarios', JSON.stringify(result.users));
+      } else {
+        updateLocalUser(payload);
       }
-      if (Array.isArray(result.users)) adminUsers = visibleUsers(result.users);
-      else updateLocalUser(payload);
       adminDataOffline = false;
-      localStorage.setItem('Config_Usuarios', JSON.stringify(adminUsers));
       persistAdminCache();
       renderUsers();
       resetUserForm();
@@ -1659,7 +1681,7 @@
     } catch (error) {
       if (!queued(payload)) {
         if (error.code === 'DUPLICATE_MATRICULA') {
-          alert('Matrícula já cadastrada para outro funcionário');
+          alert('Matrícula já cadastrada para outro funcionário.');
           return false;
         }
         if (goToLoginIfUnauthorized(error)) return false;
@@ -1672,7 +1694,7 @@
       updateLocalUser(payload);
       resetUserForm();
       refreshViews();
-      showToast('Alteração salva na fila offline. Será aplicada ao sincronizar.');
+      showToast('Alteração salva na fila offline.');
       return true;
     }
   }
@@ -1694,15 +1716,15 @@
       showToast('Matrícula, nome e PIN de exatamente 4 dígitos são obrigatórios.');
       return;
     }
-    const duplicate = adminUsers.some((user) =>
+    const duplicate = DB.getCachedUsers().some((user) =>
       String(user.Matricula) === payload.Matricula &&
       String(user.Matricula) !== payload.Matricula_Original
     );
     if (duplicate) {
-      alert('Matrícula já cadastrada para outro funcionário');
+      alert('Matrícula já cadastrada para outro funcionário.');
       return;
     }
-    if (!['ADMIN_GERAL','LIDER_TURNO','OPERADOR'].includes(payload.Perfil)) {
+    if (!['ADMIN_GERAL', 'LIDER_TURNO', 'OPERADOR'].includes(payload.Perfil)) {
       showToast('Perfil inválido.');
       return;
     }
@@ -1719,6 +1741,138 @@
     if (edit) openUserEdit(edit.dataset.id);
   }
 
+  // =========================================================================
+  // GESTÃO DE MOTORISTAS E FROTAS POR TURNO (RECURSOS_TURNO)
+  // =========================================================================
+  function applyResourceFormPermissions() {
+    const shiftSelect = el('resourceShift');
+    if (!shiftSelect) return;
+    if (isLeader()) {
+      shiftSelect.value = linkedShift();
+      shiftSelect.disabled = true;
+    } else {
+      shiftSelect.disabled = !isGeneralAdmin();
+    }
+  }
+
+  function resetResourceForm() {
+    if (!el('resourceForm')) return;
+    el('resourceEditId').value = '';
+    el('resourceForm').reset();
+    el('resourceType').value = 'MOTORISTA';
+    el('resourceShift').value = isLeader()
+      ? linkedShift()
+      : (currentShift() === 'Geral' ? 'Turno B' : currentShift());
+    el('resourceActive').value = 'SIM';
+    el('saveResourceButton').textContent = '＋ Cadastrar motorista / frota';
+    el('cancelResourceEditButton').hidden = true;
+    applyResourceFormPermissions();
+  }
+
+  function renderResources() {
+    const container = el('resourcesList');
+    const status = el('resourceManagementStatus');
+    if (!container) return;
+    const list = visibleResourcesForAdmin(allResources);
+    status.textContent = isLeader()
+      ? `Mostrando ${list.length} motorista(s) e frota(s) exclusivos do ${linkedShift()}.`
+      : `Mostrando ${list.length} recurso(s) cadastrados entre os turnos.`;
+
+    if (!list.length) {
+      container.innerHTML = '<div class="empty-state">Nenhum motorista ou frota cadastrado neste turno ainda.</div>';
+      return;
+    }
+
+    container.innerHTML = list.slice().sort((a, b) => {
+      const typeCmp = String(a.Tipo).localeCompare(String(b.Tipo));
+      if (typeCmp !== 0) return typeCmp;
+      return String(a.Nome).localeCompare(String(b.Nome), 'pt-BR');
+    }).map((res) => {
+      const active = String(res.Ativo).toUpperCase() === 'SIM';
+      const isFleet = String(res.Tipo).toUpperCase() === 'FROTA';
+      return `<article class="user-row">
+        <div>
+          <div class="user-name">${escapeHtml(res.Nome)}</div>
+          <div class="user-detail">${isFleet ? 'Veículo / Rebocador' : 'Condutor autorizado'}</div>
+        </div>
+        <span class="role-tag${isFleet ? ' fleet' : ''}">${escapeHtml(res.Tipo)}</span>
+        <span class="user-detail">${escapeHtml(res.Turno_Vinculado)}</span>
+        <span class="user-status${active ? '' : ' inactive'}">${active ? 'ATIVO' : 'BLOQUEADO'}</span>
+        <div class="user-actions">
+          <button class="button edit-resource" type="button" data-id="${escapeHtml(res.ID_Recurso)}">✏️ Editar</button>
+        </div>
+      </article>`;
+    }).join('');
+  }
+
+  function openResourceEdit(id) {
+    const res = allResources.find((item) => String(item.ID_Recurso) === String(id));
+    if (!res) return;
+    el('resourceEditId').value = res.ID_Recurso;
+    el('resourceType').value = res.Tipo;
+    el('resourceName').value = res.Nome;
+    el('resourceShift').value = res.Turno_Vinculado;
+    el('resourceActive').value = res.Ativo;
+    el('saveResourceButton').textContent = 'Salvar alteração';
+    el('cancelResourceEditButton').hidden = false;
+    applyResourceFormPermissions();
+    el('resourceName').focus();
+  }
+
+  async function saveResource(event) {
+    event.preventDefault();
+    const payload = {
+      action: 'salvar_recurso',
+      ID_Recurso: el('resourceEditId').value.trim(),
+      Tipo: el('resourceType').value,
+      Nome: el('resourceName').value.trim().toUpperCase(),
+      Turno_Vinculado: isLeader() ? linkedShift() : el('resourceShift').value,
+      Ativo: el('resourceActive').value
+    };
+    if (!payload.Nome) {
+      showToast('Informe o nome do motorista ou identificação da frota.');
+      return;
+    }
+    const button = el('saveResourceButton');
+    button.disabled = true;
+    try {
+      const result = await DB.sendOrQueue(payload);
+      if (Array.isArray(result.resources)) {
+        allResources = result.resources;
+      } else {
+        const idx = allResources.findIndex((r) => r.ID_Recurso === payload.ID_Recurso);
+        const item = { ...payload, ID_Recurso: payload.ID_Recurso || `local-${Date.now()}` };
+        if (idx >= 0) allResources[idx] = item;
+        else allResources.push(item);
+        localStorage.setItem('Cadastro_Recursos_Turno', JSON.stringify(allResources));
+      }
+      resetResourceForm();
+      renderResources();
+      renderOperationResources();
+      showToast(result.mensagem || 'Cadastro salvo e liberado para o turno!');
+    } catch (error) {
+      if (!queued(payload)) {
+        if (goToLoginIfUnauthorized(error)) return;
+        showToast(error.message || 'Erro ao salvar motorista/frota.', 5000);
+        return;
+      }
+      resetResourceForm();
+      renderResources();
+      renderOperationResources();
+      showToast('Salvo na fila offline.');
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function handleResourcesList(event) {
+    const edit = event.target.closest('.edit-resource');
+    if (edit) openResourceEdit(edit.dataset.id);
+  }
+
+  // =========================================================================
+  // EDIÇÃO E ESTORNO DE LANÇAMENTOS
+  // =========================================================================
   function openEdit(record) {
     el('editRecordId').value = record.ID_Apontamento;
     el('editLotName').value = record.Nome_Lote || '';
@@ -1726,8 +1880,18 @@
     const model = normalizeModelKey(record.Modelo_Base) || Object.keys(CATALOG)[0];
     el('editModelSelect').value = model;
     el('editQuantityInput').value = String(record.Qtd_Enviada ?? 1);
+
+    const shift = record.Turno || currentShift();
+    const drivers = allowedResourcesForShift('MOTORISTA', shift).map((d) => d.Nome);
+    if (record.Motorista && !drivers.includes(record.Motorista)) drivers.unshift(record.Motorista);
+    el('editDriverInput').replaceChildren(...drivers.map((name) => new Option(name, name)));
     el('editDriverInput').value = record.Motorista || '';
+
+    const fleets = allowedResourcesForShift('FROTA', shift).map((f) => f.Nome);
+    if (record.Frota && !fleets.includes(record.Frota)) fleets.unshift(record.Frota);
+    el('editFleetInput').replaceChildren(...fleets.map((name) => new Option(name, name)));
     el('editFleetInput').value = record.Frota || '';
+
     renderEditComponents(record.Componente);
     el('editModal').showModal();
   }
@@ -1765,13 +1929,13 @@
     try {
       try {
         await DB.sendOrQueue(payload);
-        showToast('Lançamento existente atualizado na planilha.');
+        showToast('⚡ Lançamento atualizado em tempo real.');
       } catch (error) {
         if (!queued(payload)) {
           if (goToLoginIfUnauthorized(error)) return;
           throw error;
         }
-        showToast('Edição salva na fila offline; o ID será atualizado sem duplicar a linha.');
+        showToast('Edição salva na fila offline.');
       }
       const previousRecord = { ...record };
       if (previousRecord.Status !== 'ESTORNADO') {
@@ -1797,7 +1961,6 @@
       el('editModal').close();
       renderLots();
       refreshViews();
-      silentSync();
     } catch (error) {
       showToast(error.message || 'Não foi possível editar o lançamento.', 5000);
     } finally {
@@ -1843,13 +2006,13 @@
     try {
       try {
         await DB.sendOrQueue(payload);
-        showToast('Lançamento estornado. A linha da planilha foi preservada.');
+        showToast('⚡ Lançamento estornado em tempo real.');
       } catch (error) {
         if (!queued(payload)) {
           if (goToLoginIfUnauthorized(error)) return;
           throw error;
         }
-        showToast('Estorno salvo na fila offline; será aplicado sem excluir a linha.');
+        showToast('Estorno salvo na fila offline.');
       }
       record.Status = 'ESTORNADO';
       record.Motivo_Estorno = reason;
@@ -1857,7 +2020,6 @@
       DB.setCache(records);
       el('reverseModal').close();
       refreshViews();
-      silentSync();
     } catch (error) {
       showToast(error.message || 'Não foi possível estornar o lançamento.', 5000);
     } finally {
@@ -1883,21 +2045,23 @@
     el(views[view]).classList.add('active');
     document.querySelectorAll('.nav-button').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
     if (view === 'cockpit') Cockpit.update(records, cockpitContext());
-    if (view === 'settings') renderAccess();
+    if (view === 'settings') {
+      renderAccess();
+      renderUsers();
+      renderResources();
+    }
     return true;
   }
 
   function changeGeneralShift() {
     if (!isGeneralAdmin()) return;
     const turn = el('generalShiftSelect').value;
-    if (!['Turno A','Turno B','Turno C','Geral'].includes(turn)) return;
+    if (!['Turno A', 'Turno B', 'Turno C', 'Geral'].includes(turn)) return;
     session = DB.setSession({ ...session, Turno: turn });
     SESSAO = session;
     localStorage.setItem('byd_shift', turn);
-    loadGovernanceConfig();
     renderAccess();
-    renderChoiceChips('driverChips', 'driverOptions', uiConfig.drivers, 'driverInput');
-    renderChoiceChips('fleetChips', 'fleetOptions', uiConfig.fleets, 'fleetInput');
+    renderOperationResources();
     renderLots();
     refreshViews();
   }
@@ -1913,7 +2077,7 @@
       select.disabled = false;
       return;
     }
-    if (user && ['LIDER_TURNO','OPERADOR'].includes(String(user.Perfil).toUpperCase())) {
+    if (user && ['LIDER_TURNO', 'OPERADOR'].includes(String(user.Perfil).toUpperCase())) {
       select.value = user.Turno_Vinculado;
       select.disabled = true;
       return;
@@ -1969,7 +2133,6 @@
     refreshViews();
     try {
       await DB.sendOrQueue(payload);
-      silentSync();
     } catch (error) {
       if (!queued(payload)) {
         activeLots = activeLots.filter((item) => item.id !== lot.id);
@@ -1977,15 +2140,15 @@
         renderLots();
         refreshViews();
         if (goToLoginIfUnauthorized(error)) return;
-        showToast(error.message || 'Não foi possível salvar o lote na planilha.', 5000);
+        showToast(error.message || 'Não foi possível salvar o lote.', 5000);
         return;
       }
     }
     renderLots();
     refreshViews();
     showToast(DB.getQueue().some((item) => item.ID_Lote === lot.id)
-      ? `Lote ${name} salvo na fila para sincronização.`
-      : `Lote ${name} criado e gravado na planilha.`);
+      ? `Lote ${name} salvo na fila offline.`
+      : `⚡ Lote ${name} criado e visível para todos os operadores!`);
   }
 
   async function deleteSelectedLot() {
@@ -2041,16 +2204,15 @@
 
       try {
         await DB.sendOrQueue(payload);
-        showToast(`Lote ${lot.name} excluído da planilha.`);
-        silentSync();
+        showToast(`Lote ${lot.name} excluído em tempo real.`);
       } catch (error) {
         if (queued(payload)) {
-          showToast(`Lote ${lot.name} removido localmente; exclusão na planilha na fila.`);
+          showToast(`Lote ${lot.name} removido localmente; exclusão na fila.`);
           updateSyncStatus();
           return;
         }
         if (goToLoginIfUnauthorized(error)) return;
-        showToast(error.message || 'Não foi possível excluir o lote na planilha.', 5000);
+        showToast(error.message || 'Não foi possível excluir o lote.', 5000);
         await silentSync();
       }
     } finally {
@@ -2180,10 +2342,20 @@
     el('reverseForm').addEventListener('submit', submitReverse);
     el('editForm').addEventListener('submit', submitEdit);
     el('editModelSelect').addEventListener('change', () => renderEditComponents());
+
+    // Equipe por turno
     el('userForm').addEventListener('submit', createUser);
     el('usersList').addEventListener('click', handleUsersList);
     el('cancelUserEditButton').addEventListener('click', resetUserForm);
     el('newUserRole').addEventListener('change', handleUserRoleChange);
+    if (el('userShiftFilter')) el('userShiftFilter').addEventListener('change', renderUsers);
+
+    // Motoristas e frotas por turno
+    if (el('resourceForm')) el('resourceForm').addEventListener('submit', saveResource);
+    if (el('resourcesList')) el('resourcesList').addEventListener('click', handleResourcesList);
+    if (el('cancelResourceEditButton')) el('cancelResourceEditButton').addEventListener('click', resetResourceForm);
+    if (el('resourceShiftFilter')) el('resourceShiftFilter').addEventListener('change', renderResources);
+
     el('settingsModelSelect').addEventListener('change', loadModelEditor);
     el('loadModelButton').addEventListener('click', loadModelEditor);
     el('saveModelButton').addEventListener('click', saveModel);
@@ -2206,10 +2378,10 @@
   async function restoreSession() {
     const saved = DB.getSession();
     const valid = saved && saved.Matricula && saved.Nome &&
-      ['OPERADOR','LIDER_TURNO','ADMIN_GERAL'].includes(saved.Perfil) &&
+      ['OPERADOR', 'LIDER_TURNO', 'ADMIN_GERAL'].includes(saved.Perfil) &&
       (saved.Perfil === 'ADMIN_GERAL'
-        ? ['Turno A','Turno B','Turno C','Geral'].includes(saved.Turno)
-        : ['Turno A','Turno B','Turno C'].includes(saved.Turno_Vinculado)) &&
+        ? ['Turno A', 'Turno B', 'Turno C', 'Geral'].includes(saved.Turno)
+        : ['Turno A', 'Turno B', 'Turno C'].includes(saved.Turno_Vinculado)) &&
       (!saved.expiresAt || saved.expiresAt > Date.now());
     if (!valid) {
       showLogin();
@@ -2224,11 +2396,11 @@
   function initialize() {
     attachEvents();
     Object.keys(CATALOG).forEach((model) => el('newLotModel').add(new Option(model, model)));
-    renderChoiceChips('driverChips', 'driverOptions', uiConfig.drivers, 'driverInput');
-    renderChoiceChips('fleetChips', 'fleetOptions', uiConfig.fleets, 'fleetInput');
+    renderOperationResources();
     renderLots();
     renderModelSelect();
     resetUserForm();
+    resetResourceForm();
     updateLoginShiftForUser();
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
