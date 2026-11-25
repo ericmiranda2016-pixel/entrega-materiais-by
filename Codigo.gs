@@ -67,7 +67,12 @@ function doPost(e) {
       requireGeneralAdmin(session);
       return jsonResponse(saveModel(payload));
     }
-    if (action === 'salvar_lote') return jsonResponse(saveLot(payload, session));
+    if (action === 'salvar_lote' || action === 'criar_lote') {
+      return jsonResponse(saveLot(payload, session));
+    }
+    if (action === 'excluir_lote') {
+      return jsonResponse(deleteLot(payload, session));
+    }
     if (action === 'criar_viagem') return jsonResponse(createTrip(payload, session));
     if (action === 'editar_apontamento') return jsonResponse(editAppointment(payload, session));
     if (action === 'reverse') return jsonResponse(updateStatus(payload, session));
@@ -785,30 +790,98 @@ function saveModel(payload) {
 
 function saveLot(payload, session) {
   const name = String(payload.Nome_Lote || '').trim();
-  const model = String(payload.Modelo_Base || '').trim();
+  const rawModel = String(payload.Modelo_Base || '').trim();
   const id = String(payload.ID_Lote || '').trim();
   let turn = normalizeTurn(payload.Turno_Vinculado || payload.Turno);
-  if (!id || !name || !model) throw apiError('ID, nome e modelo do lote são obrigatórios.', 'INVALID_INPUT');
+  if (!id || !name || !rawModel) throw apiError('ID, nome e modelo do lote são obrigatórios.', 'INVALID_INPUT');
   if (session.Perfil !== 'ADMIN_GERAL') turn = session.Turno_Vinculado;
   if (!turn || turn === 'TODOS' || turn === 'Geral') {
     throw apiError('Turno do lote inválido.', 'INVALID_INPUT');
   }
-  if (!listModels().some(function(item) { return item.Modelo_Base === model; })) {
+  const foundModel = listModels().find(function(item) {
+    return item.Modelo_Base.toUpperCase() === rawModel.toUpperCase();
+  });
+  if (!foundModel) {
     throw apiError('Modelo base não cadastrado.', 'INVALID_INPUT');
   }
+  const model = foundModel.Modelo_Base;
   const sheet = getLotSheet();
   const rows = sheet.getDataRange().getValues();
   let rowNumber = -1;
   for (let i = 1; i < rows.length; i++) {
-    if (String(rows[i][0]) === id) {
+    const existingId = String(rows[i][0] || '').trim();
+    const existingName = String(rows[i][1] || '').trim();
+    const existingModel = String(rows[i][2] || '').trim().toUpperCase();
+    if (existingId === id || (existingName.toLocaleLowerCase() === name.toLocaleLowerCase() && existingModel === model.toUpperCase())) {
       rowNumber = i + 1;
       break;
     }
   }
-  const row = [id,name,model,turn,'SIM',payload.Data_Criacao || new Date().toISOString()];
+  const row = [id, name, model, turn, 'SIM', payload.Data_Criacao || new Date().toISOString()];
   if (rowNumber < 0) sheet.appendRow(row);
   else sheet.getRange(rowNumber, 1, 1, LOT_HEADERS.length).setValues([row]);
-  return { ok: true, lot: { ID_Lote:id, Nome_Lote:name, Modelo_Base:model, Turno_Vinculado:turn, Ativo:'SIM', Data_Criacao:row[5] } };
+  return { ok: true, lot: { ID_Lote: id, Nome_Lote: name, Modelo_Base: model, Turno_Vinculado: turn, Ativo: 'SIM', Data_Criacao: row[5] } };
+}
+
+function deleteLot(payload, session) {
+  const id = String(payload.ID_Lote || '').trim();
+  const name = String(payload.Nome_Lote || '').trim();
+  const model = String(payload.Modelo_Base || '').trim().toUpperCase();
+  if (!id && (!name || !model)) {
+    throw apiError('Informe o ID ou nome e modelo do lote para excluir.', 'INVALID_INPUT');
+  }
+
+  const sheet = getLotSheet();
+  const values = sheet.getDataRange().getValues();
+  let rowNumber = -1;
+  let foundLot = null;
+
+  for (let i = 1; i < values.length; i++) {
+    const rowId = String(values[i][0] || '').trim();
+    const rowName = String(values[i][1] || '').trim();
+    const rowModel = String(values[i][2] || '').trim().toUpperCase();
+    const rowTurn = normalizeTurn(values[i][3]);
+    const matchById = id && rowId === id;
+    const matchByNameModel = name && model &&
+      rowName.toLocaleLowerCase() === name.toLocaleLowerCase() &&
+      rowModel === model;
+    if (matchById || matchByNameModel) {
+      rowNumber = i + 1;
+      foundLot = {
+        ID_Lote: rowId,
+        Nome_Lote: rowName,
+        Modelo_Base: String(values[i][2] || '').trim(),
+        Turno_Vinculado: rowTurn
+      };
+      break;
+    }
+  }
+
+  if (rowNumber < 0 || !foundLot) {
+    return { ok: true, deleted: false, message: 'Lote já não estava na planilha.' };
+  }
+
+  if (session.Perfil !== 'ADMIN_GERAL' &&
+      foundLot.Turno_Vinculado &&
+      turnKey(foundLot.Turno_Vinculado) !== turnKey(session.Turno_Vinculado)) {
+    throw apiError('Você só pode excluir lotes do seu turno vinculado.', 'FORBIDDEN');
+  }
+
+  const activeRecords = listRecords().filter(function(record) {
+    return String(record.Status || '').toUpperCase() !== 'ESTORNADO' &&
+      String(record.Nome_Lote || '').trim().toLocaleLowerCase() === foundLot.Nome_Lote.toLocaleLowerCase() &&
+      String(record.Modelo_Base || '').trim().toUpperCase() === foundLot.Modelo_Base.toUpperCase();
+  });
+
+  if (activeRecords.length > 0) {
+    throw apiError(
+      'Este lote possui ' + activeRecords.length + ' lançamento(s) ativo(s). Estorne os lançamentos antes de excluir o lote.',
+      'LOT_HAS_RECORDS'
+    );
+  }
+
+  sheet.deleteRow(rowNumber);
+  return { ok: true, deleted: true, ID_Lote: foundLot.ID_Lote, Nome_Lote: foundLot.Nome_Lote };
 }
 
 function getHeaderMap(sheet) {

@@ -48,7 +48,7 @@
   function isLotQueuedLocally(lot) {
     try {
       return DB.getQueue().some((item) =>
-        item.action === 'criar_lote' && (
+        ['criar_lote', 'salvar_lote'].includes(item.action) && (
           (lot.id && item.ID_Lote === lot.id) ||
           (String(item.Nome_Lote || '').trim().toLocaleLowerCase('pt-BR') === lot.name.toLocaleLowerCase('pt-BR') &&
            normalizeModelKey(item.Modelo_Base) === normalizeModelKey(lot.model))
@@ -570,7 +570,7 @@
       Nome_Lote: lot.name,
       Modelo_Base: lot.model,
       Turno_Vinculado: /^Turno\s+/i.test(lot.shift || '') ? lot.shift : `Turno ${lot.shift || 'A'}`,
-      Ativo: 'ATIVO',
+      Ativo: 'SIM',
       Data_Criacao: lot.createdAt,
       createdLocalAt: lot.createdLocalAt || 0
     }));
@@ -605,11 +605,13 @@
 
   function renderLots() {
     const select = el('activeLotSelect');
+    const deleteBtn = el('deleteBatchButton');
     const lots = activeLots.filter((lot) => !lotIsComplete(lot));
     if (!lots.length) {
       select.replaceChildren(new Option('Nenhum lote • crie um novo', ''));
       selectedLotId = '';
       localStorage.removeItem(SELECTED_LOT_KEY);
+      if (deleteBtn) deleteBtn.disabled = true;
       renderSelectedLot();
       return;
     }
@@ -620,6 +622,7 @@
     if (!lots.some((lot) => lot.id === selectedLotId)) selectedLotId = lots[lots.length - 1].id;
     select.value = selectedLotId;
     localStorage.setItem(SELECTED_LOT_KEY, selectedLotId);
+    if (deleteBtn) deleteBtn.disabled = false;
     renderSelectedLot();
   }
 
@@ -1948,7 +1951,7 @@
       shift: currentShift()
     };
     const payload = {
-      action: 'criar_lote',
+      action: 'salvar_lote',
       ID_Lote: lot.id,
       Nome_Lote: lot.name,
       Modelo_Base: lot.model,
@@ -1966,10 +1969,15 @@
     refreshViews();
     try {
       await DB.sendOrQueue(payload);
+      silentSync();
     } catch (error) {
       if (!queued(payload)) {
+        activeLots = activeLots.filter((item) => item.id !== lot.id);
+        DB.removeLotFromLocal({ ID_Lote: lot.id, Nome_Lote: lot.name, Modelo_Base: lot.model });
+        renderLots();
+        refreshViews();
         if (goToLoginIfUnauthorized(error)) return;
-        showToast(error.message || 'Não foi possível salvar o lote.', 5000);
+        showToast(error.message || 'Não foi possível salvar o lote na planilha.', 5000);
         return;
       }
     }
@@ -1977,7 +1985,77 @@
     refreshViews();
     showToast(DB.getQueue().some((item) => item.ID_Lote === lot.id)
       ? `Lote ${name} salvo na fila para sincronização.`
-      : `Lote ${name} selecionado.`);
+      : `Lote ${name} criado e gravado na planilha.`);
+  }
+
+  async function deleteSelectedLot() {
+    const lot = currentLot();
+    if (!lot) {
+      showToast('Selecione um lote para excluir.');
+      return;
+    }
+    const hasStagedItems = tripItems.some((item) =>
+      String(item.Nome_Lote || '').trim().toLocaleLowerCase('pt-BR') === lot.name.toLocaleLowerCase('pt-BR') &&
+      normalizeModelKey(item.Modelo_Base) === normalizeModelKey(lot.model)
+    );
+    if (hasStagedItems) {
+      showToast('Remova os materiais deste lote da carga atual antes de excluí-lo.', 4500);
+      return;
+    }
+    const hasActiveRecords = records.some((record) =>
+      String(record.Status || '').toUpperCase() !== 'ESTORNADO' &&
+      String(record.Nome_Lote || '').trim().toLocaleLowerCase('pt-BR') === lot.name.toLocaleLowerCase('pt-BR') &&
+      normalizeModelKey(record.Modelo_Base) === normalizeModelKey(lot.model)
+    );
+    if (hasActiveRecords) {
+      showToast('Este lote possui lançamentos ativos. Estorne-os antes de excluir o lote.', 5000);
+      return;
+    }
+    if (!window.confirm(`Deseja realmente excluir o lote "${lot.name} (${lot.model})"?`)) {
+      return;
+    }
+
+    const button = el('deleteBatchButton');
+    if (button) button.disabled = true;
+
+    const payload = {
+      action: 'excluir_lote',
+      ID_Lote: lot.id,
+      Nome_Lote: lot.name,
+      Modelo_Base: lot.model
+    };
+
+    try {
+      activeLots = activeLots.filter((item) => !sameLot(item, lot));
+      lotProgress = lotProgress.filter((progress) =>
+        !(String(progress.Nome_Lote || '').trim().toLocaleLowerCase('pt-BR') === lot.name.toLocaleLowerCase('pt-BR') &&
+          normalizeModelKey(progress.Modelo_Base) === normalizeModelKey(lot.model))
+      );
+      DB.removeLotFromLocal({ ID_Lote: lot.id, Nome_Lote: lot.name, Modelo_Base: lot.model });
+      persistLots();
+      localStorage.setItem('Progresso_Lotes', JSON.stringify(lotProgress));
+      selectedLotId = '';
+      quantity = 0;
+      renderLots();
+      refreshViews();
+
+      try {
+        await DB.sendOrQueue(payload);
+        showToast(`Lote ${lot.name} excluído da planilha.`);
+        silentSync();
+      } catch (error) {
+        if (queued(payload)) {
+          showToast(`Lote ${lot.name} removido localmente; exclusão na planilha na fila.`);
+          updateSyncStatus();
+          return;
+        }
+        if (goToLoginIfUnauthorized(error)) return;
+        showToast(error.message || 'Não foi possível excluir o lote na planilha.', 5000);
+        await silentSync();
+      }
+    } finally {
+      if (button) button.disabled = activeLots.filter((item) => !lotIsComplete(item)).length === 0;
+    }
   }
 
   function openNewLot() {
@@ -2015,6 +2093,7 @@
     el('syncButton').addEventListener('click', syncNow);
     el('generalShiftSelect').addEventListener('change', changeGeneralShift);
     el('newBatchButton').addEventListener('click', openNewLot);
+    el('deleteBatchButton').addEventListener('click', deleteSelectedLot);
     el('batchForm').addEventListener('submit', createLot);
     el('addTripItemButton').addEventListener('click', () => {
       try {

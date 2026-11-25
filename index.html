@@ -42,7 +42,7 @@
     .button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: 8px; padding: 10px 14px; background: #172235; color: #E2E8F0; font-size: 13px; font-weight: 800; cursor: pointer; transition: background .15s, transform .15s, border-color .15s; }
     .button:hover { border-color: #3B526D; background: #1B2A40; }
     .button:active { transform: scale(.98); }
-    .button:disabled { cursor: wait; opacity: .6; }
+    .button:disabled { cursor: not-allowed; opacity: .55; }
     .button-primary { border-color: #D40011; background: var(--red); color: #fff; }
     .button-primary:hover { border-color: #FB7185; background: #C90010; }
     .button-cyan { border-color: #0284C7; background: #0369A1; color: #F0F9FF; }
@@ -63,7 +63,7 @@
     .card { background: var(--surface); padding: 15px; box-shadow: 0 12px 30px rgba(0,0,0,.12); }
     .card-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; color: #E2E8F0; font-size: 12px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
     .field-label { display: block; margin: 0 0 6px; color: #94A3B8; font-size: 11px; font-weight: 750; }
-    .batch-row { display: grid; grid-template-columns: 1fr auto; gap: 9px; margin-bottom: 12px; }
+    .batch-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; margin-bottom: 12px; }
     .batch-select { min-width: 0; min-height: 48px; font-size: 14px; font-weight: 800; }
     .batch-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 11px; color: #94A3B8; font-size: 11px; }
     .meta-badge { border: 1px solid #26364B; border-radius: 999px; padding: 5px 9px; background: #0B1324; color: #CBD5E1; font-weight: 750; }
@@ -218,6 +218,7 @@
       .header-controls { grid-template-columns: minmax(0, 1fr) minmax(95px, .7fr) auto; gap: 6px; }
       .control { padding: 8px; font-size: 12px; }
       .sync-button { width: 42px; overflow: hidden; padding: 8px; font-size: 17px; }
+      .batch-row { grid-template-columns: 1fr auto auto; gap: 6px; }
       main { padding: 14px 12px calc(84px + env(safe-area-inset-bottom)); }
       .card { padding: 13px; }
       .driver-fleet-grid { grid-template-columns: 1fr; }
@@ -317,6 +318,7 @@
             <span class="field-label">Selecione o lote</span>
             <select id="activeLotSelect" class="control batch-select" aria-label="Lote ativo"></select>
           </label>
+          <button id="deleteBatchButton" class="button button-danger" type="button" style="align-self:end;padding:10px 11px" title="Excluir lote selecionado" aria-label="Excluir lote selecionado">🗑️</button>
           <button id="newBatchButton" class="button button-primary" type="button" style="align-self:end">＋ Novo Lote</button>
         </div>
         <div id="batchMeta" class="batch-meta"></div>
@@ -664,8 +666,8 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </div>
 
-  <script src="db.js?v=5"></script>
-  <script src="cockpit.js?v=5"></script>
-  <script src="app.js?v=5"></script>
+  <script src="db.js?v=6"></script>
+  <script src="cockpit.js?v=6"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

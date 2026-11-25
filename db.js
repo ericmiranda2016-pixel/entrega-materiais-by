@@ -84,14 +84,42 @@ const DB = (() => {
       .map((item) => normalizeLotRow({ ...item, Ativo: item.Ativo || 'ATIVO' }));
   }
 
+  function deletedQueuedLots(queue) {
+    return queue.filter((item) => item.action === 'excluir_lote')
+      .map((item) => normalizeLotRow(item));
+  }
+
   function mergeLotRows(remoteLots, localLots, queue) {
-    const merged = remoteLots.map(normalizeLotRow);
+    const deleted = deletedQueuedLots(queue);
+    const isDeleted = (lot) => deleted.some((del) => sameLot(del, lot));
+    const merged = remoteLots.map(normalizeLotRow).filter((lot) => !isDeleted(lot));
     const localCandidates = localLots.concat(queuedLots(queue)).map(normalizeLotRow);
     localCandidates.forEach((lot) => {
-      if (!lot.Nome_Lote || !lot.Modelo_Base || !isActiveLot(lot)) return;
+      if (!lot.Nome_Lote || !lot.Modelo_Base || !isActiveLot(lot) || isDeleted(lot)) return;
       if (!merged.some((remoteLot) => sameLot(remoteLot, lot))) merged.push(lot);
     });
     return merged;
+  }
+
+  function removeLotFromLocal(lot) {
+    const target = normalizeLotRow(lot);
+    const filterList = (list) => list.filter((item) => !sameLot(normalizeLotRow(item), target));
+
+    const updatedLotCache = filterList(readArray(LOT_CACHE_KEY, []));
+    const updatedLocalLots = filterList(readArray(LOCAL_LOTS_KEY, []));
+    const updatedLegacyLots = filterList(readArray(LEGACY_LOTS_KEY, []));
+    const updatedProgress = filterList(readArray(LOT_PROGRESS_KEY, []));
+
+    localStorage.setItem(LOT_CACHE_KEY, JSON.stringify(updatedLotCache));
+    localStorage.setItem(LOCAL_LOTS_KEY, JSON.stringify(updatedLocalLots));
+    localStorage.setItem(LEGACY_LOTS_KEY, JSON.stringify(updatedLegacyLots));
+    localStorage.setItem(LOT_PROGRESS_KEY, JSON.stringify(updatedProgress));
+
+    const cleanedQueue = getQueue().filter((item) => {
+      if (!['criar_lote', 'salvar_lote'].includes(item.action)) return true;
+      return !sameLot(normalizeLotRow(item), target);
+    });
+    setQueue(cleanedQueue);
   }
 
   function cleanQueuedRecord(record) {
@@ -251,7 +279,7 @@ const DB = (() => {
   function isAuthorizationError(error) {
     return [
       'AUTH_REQUIRED','FORBIDDEN','INVALID_CREDENTIALS','INVALID_INPUT',
-      'NOT_FOUND','INVALID_ACTION','DUPLICATE_MATRICULA','LAST_ADMIN'
+      'NOT_FOUND','INVALID_ACTION','DUPLICATE_MATRICULA','LAST_ADMIN','LOT_HAS_RECORDS'
     ].includes(error.code);
   }
 
@@ -394,8 +422,11 @@ const DB = (() => {
         await post(payload);
         sent++;
       } catch (error) {
+        if (['INVALID_ACTION', 'NOT_FOUND'].includes(error.code)) {
+          continue;
+        }
         if (isAuthorizationError(error)) {
-          setQueue(queue.slice(index));
+          setQueue(remaining.concat(queue.slice(index)));
           throw error;
         }
         if (error.code === 'BALANCE_EXCEEDED') {
@@ -582,6 +613,7 @@ const DB = (() => {
     getCachedUsers,
     sincronizarLeitura,
     authenticateFallbackSession,
+    removeLotFromLocal,
     getLotProgress: () => readArray(LOT_PROGRESS_KEY, [])
   };
 })();
