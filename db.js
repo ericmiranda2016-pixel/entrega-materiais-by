@@ -5,7 +5,8 @@ const DB = (() => {
   // 1. CONFIGURAÇÃO DO SUPABASE (TEMPO REAL < 0,3s) + ESPELHO GOOGLE SHEETS
   // =========================================================================
   const SUPABASE_URL = 'https://ywwaoyqskngbivvpxgny.supabase.co';
-  const SUPABASE_ANON_KEY = 'postgresql://postgres:[YOUR-DATABASE-PASSWORD]@db.nsyrvgmdkdhznexbsqwz.supabase.co:5432/postgres';
+  // Cole aqui a chave "anon / public" (começa com eyJ... ou sb_publishable_...) de Project Settings > API:
+  const SUPABASE_ANON_KEY = 'sb_publishable_5RdyvbPoKKpDgBMJEiNgcQ_bGxQ7yIz';
   const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbxhdG44T6jX-f7_iH1xH28Q0lT-q0y8P1B-3l2gR9s2wK60/exec';
 
   const CONFIG_KEY = 'byd_apps_script_url';
@@ -48,11 +49,19 @@ const DB = (() => {
   let realtimeConnected = false;
   let realtimeDebounceTimer = null;
 
+  function hasValidSupabaseConfig() {
+    const url = String(SUPABASE_URL || '').trim();
+    const key = String(SUPABASE_ANON_KEY || '').trim();
+    if (!url.startsWith('https://') || !key) return false;
+    if (key.startsWith('postgresql://') || key.includes('COLE_SUA_CHAVE')) return false;
+    return /^(eyJ|sb_publishable_)/.test(key);
+  }
+
   function getSupabase() {
     if (supabaseClient) return supabaseClient;
     if (!window.supabase || typeof window.supabase.createClient !== 'function') return null;
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
-    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    if (!hasValidSupabaseConfig()) return null;
+    supabaseClient = window.supabase.createClient(SUPABASE_URL.trim(), SUPABASE_ANON_KEY.trim(), {
       realtime: { params: { eventsPerSecond: 20 } }
     });
     return supabaseClient;
@@ -111,10 +120,13 @@ const DB = (() => {
   function translateSupabaseError(err) {
     const msg = String(err && (err.message || err.details || err.hint) || '');
     if (/invalid api key|jwt|apikey/i.test(msg)) {
-      return apiError('Chave do Supabase inválida. Confira no painel Project Settings > API e cole a chave completa no topo do db.js.', 'CONFIG_REQUIRED');
+      return apiError('Chave do Supabase inválida. Confira no painel Project Settings > API e cole a chave anon completa no topo do db.js.', 'CONFIG_REQUIRED');
     }
     if (/duplicate key|unique constraint/i.test(msg)) {
       return apiError('Registro duplicado no banco de dados.', 'DUPLICATE_MATRICULA');
+    }
+    if (/load failed|failed to fetch|networkerror|fetch/i.test(msg)) {
+      return apiError('Falha de rede ao conectar com o Supabase.', 'NETWORK_ERROR');
     }
     return apiError(msg || 'Erro no banco de dados Supabase.', 'SERVER_ERROR');
   }
@@ -127,7 +139,11 @@ const DB = (() => {
   }
 
   function isNetworkError(error) {
-    return !navigator.onLine || error.code === 'NETWORK_ERROR' || error instanceof TypeError;
+    if (!navigator.onLine || !error) return !navigator.onLine;
+    const msg = String(error.message || '');
+    return error.code === 'NETWORK_ERROR' ||
+      error instanceof TypeError ||
+      /load failed|failed to fetch|networkerror/i.test(msg);
   }
 
   // =========================================================================
@@ -205,7 +221,7 @@ const DB = (() => {
   }
 
   // =========================================================================
-  // 3. SESSÃO E AUTENTICAÇÃO
+  // 3. SESSÃO E AUTENTICAÇÃO (COM FALLBACK OFFLINE SEGURO)
   // =========================================================================
   function normalizeSession(source) {
     if (!source || typeof source !== 'object') return null;
@@ -316,46 +332,12 @@ const DB = (() => {
     return '';
   }
 
-  async function authenticate(credentials) {
-    const matricula = String(credentials.Matricula || '').trim();
-    const pin = String(credentials.PIN === null || credentials.PIN === undefined ? '' : credentials.PIN).trim();
-    const turno = String(credentials.Turno || 'Turno A').trim();
-    const sb = getSupabase();
-
-    if (sb && navigator.onLine) {
-      const { data, error } = await sb
-        .from('usuarios')
-        .select('*')
-        .eq('matricula', matricula)
-        .maybeSingle();
-
-      if (error) throw translateSupabaseError(error);
-      if (!data) throw apiError('Matrícula, PIN ou status inválido.', 'INVALID_CREDENTIALS');
-
-      const user = mapUserRow(data);
-      if (user.PIN !== pin || user.Ativo !== 'SIM') {
-        throw apiError('Matrícula, PIN ou status inválido.', 'INVALID_CREDENTIALS');
-      }
-      if (!['ADMIN_GERAL', 'LIDER_TURNO', 'OPERADOR'].includes(user.Perfil)) {
-        throw apiError('Perfil sem permissão de acesso.', 'FORBIDDEN');
-      }
-      const selectedTurn = user.Perfil === 'ADMIN_GERAL' ? turno : user.Turno_Vinculado;
-      refreshGasTokenSilently(matricula, pin, selectedTurn);
-
-      return {
-        token: `sb-${matricula}-${Date.now()}`,
-        expiresIn: 12 * 3600,
-        Matricula: user.Matricula,
-        Nome: user.Nome,
-        Perfil: user.Perfil,
-        Turno: selectedTurn,
-        Turno_Vinculado: user.Turno_Vinculado,
-        user
-      };
-    }
-
+  function authenticateLocal(matricula, pin, turno) {
     const local = getCachedUsers().find((u) => u.Matricula === matricula && u.PIN === pin && u.Ativo === 'SIM');
     if (!local) throw apiError('Matrícula, PIN ou status inválido.', 'INVALID_CREDENTIALS');
+    if (!['ADMIN_GERAL', 'LIDER_TURNO', 'OPERADOR'].includes(local.Perfil)) {
+      throw apiError('Perfil sem permissão de acesso.', 'FORBIDDEN');
+    }
     const selectedTurn = local.Perfil === 'ADMIN_GERAL' ? turno : local.Turno_Vinculado;
     return {
       token: `offline-${matricula}-${Date.now()}`,
@@ -368,6 +350,59 @@ const DB = (() => {
       Turno_Vinculado: local.Turno_Vinculado,
       user: local
     };
+  }
+
+  async function authenticate(credentials) {
+    const matricula = String(credentials.Matricula || '').trim();
+    const pin = String(credentials.PIN === null || credentials.PIN === undefined ? '' : credentials.PIN).trim();
+    const turno = String(credentials.Turno || 'Turno A').trim();
+    const sb = getSupabase();
+
+    if (sb && navigator.onLine) {
+      try {
+        const { data, error } = await sb
+          .from('usuarios')
+          .select('*')
+          .eq('matricula', matricula)
+          .maybeSingle();
+
+        if (error) {
+          const translated = translateSupabaseError(error);
+          if (isNetworkError(translated) || translated.code === 'CONFIG_REQUIRED') {
+            return authenticateLocal(matricula, pin, turno);
+          }
+          throw translated;
+        }
+
+        if (!data) throw apiError('Matrícula, PIN ou status inválido.', 'INVALID_CREDENTIALS');
+
+        const user = mapUserRow(data);
+        if (user.PIN !== pin || user.Ativo !== 'SIM') {
+          throw apiError('Matrícula, PIN ou status inválido.', 'INVALID_CREDENTIALS');
+        }
+        if (!['ADMIN_GERAL', 'LIDER_TURNO', 'OPERADOR'].includes(user.Perfil)) {
+          throw apiError('Perfil sem permissão de acesso.', 'FORBIDDEN');
+        }
+        const selectedTurn = user.Perfil === 'ADMIN_GERAL' ? turno : user.Turno_Vinculado;
+        refreshGasTokenSilently(matricula, pin, selectedTurn);
+
+        return {
+          token: `sb-${matricula}-${Date.now()}`,
+          expiresIn: 12 * 3600,
+          Matricula: user.Matricula,
+          Nome: user.Nome,
+          Perfil: user.Perfil,
+          Turno: selectedTurn,
+          Turno_Vinculado: user.Turno_Vinculado,
+          user
+        };
+      } catch (err) {
+        if (isAuthorizationError(err)) throw err;
+        return authenticateLocal(matricula, pin, turno);
+      }
+    }
+
+    return authenticateLocal(matricula, pin, turno);
   }
 
   // =========================================================================
@@ -434,7 +469,9 @@ const DB = (() => {
 
   async function executeSupabaseWrite(payload, session) {
     const sb = getSupabase();
-    if (!sb) throw apiError('Cliente Supabase não carregado.', 'CONFIG_REQUIRED');
+    if (!sb) {
+      throw apiError('Supabase aguardando chave anon válida em db.js (salvando localmente).', 'NETWORK_ERROR');
+    }
 
     const role = String(session.Perfil || '').toUpperCase();
     const isAdmin = role === 'ADMIN_GERAL';
@@ -705,7 +742,7 @@ const DB = (() => {
   async function syncQueue() {
     const queue = getQueue();
     const session = getSession();
-    if (!queue.length || !session || !navigator.onLine) return 0;
+    if (!queue.length || !session || !navigator.onLine || !getSupabase()) return 0;
     const remaining = [];
     let sent = 0;
     for (let index = 0; index < queue.length; index++) {
@@ -761,55 +798,64 @@ const DB = (() => {
     }));
   }
 
+  function offlineSnapshot() {
+    return {
+      Config_Usuarios: getCachedUsers(),
+      Cadastro_Recursos_Turno: getCachedResources(),
+      Cadastro_Modelos: readArray(MODEL_CACHE_KEY, []),
+      Cadastro_Lista_Lotes: readArray(LOT_CACHE_KEY, []),
+      Progresso_Lotes: readArray(LOT_PROGRESS_KEY, []),
+      TB_Apontamentos: getCache(),
+      offline: true
+    };
+  }
+
   async function sincronizarLeitura() {
     const sb = getSupabase();
     if (!sb || !navigator.onLine) {
-      return {
-        Config_Usuarios: getCachedUsers(),
-        Cadastro_Recursos_Turno: getCachedResources(),
-        Cadastro_Modelos: readArray(MODEL_CACHE_KEY, []),
-        Cadastro_Lista_Lotes: readArray(LOT_CACHE_KEY, []),
-        Progresso_Lotes: readArray(LOT_PROGRESS_KEY, []),
-        TB_Apontamentos: getCache(),
-        offline: true
-      };
+      return offlineSnapshot();
     }
 
-    const [usersRes, resourcesRes, modelsRes, lotsRes, recordsRes] = await Promise.all([
-      sb.from('usuarios').select('*').order('nome'),
-      sb.from('recursos_turno').select('*').order('nome'),
-      sb.from('modelos').select('*').order('modelo_base'),
-      sb.from('lotes').select('*').eq('ativo', 'SIM').order('data_criacao'),
-      sb.from('apontamentos').select('*').order('data_hora', { ascending: false }).limit(800)
-    ]);
+    try {
+      const [usersRes, resourcesRes, modelsRes, lotsRes, recordsRes] = await Promise.all([
+        sb.from('usuarios').select('*').order('nome'),
+        sb.from('recursos_turno').select('*').order('nome'),
+        sb.from('modelos').select('*').order('modelo_base'),
+        sb.from('lotes').select('*').eq('ativo', 'SIM').order('data_criacao'),
+        sb.from('apontamentos').select('*').order('data_hora', { ascending: false }).limit(800)
+      ]);
 
-    if (usersRes.error) throw translateSupabaseError(usersRes.error);
-    if (resourcesRes.error) throw translateSupabaseError(resourcesRes.error);
-    if (modelsRes.error) throw translateSupabaseError(modelsRes.error);
-    if (lotsRes.error) throw translateSupabaseError(lotsRes.error);
-    if (recordsRes.error) throw translateSupabaseError(recordsRes.error);
+      if (usersRes.error) throw translateSupabaseError(usersRes.error);
+      if (resourcesRes.error) throw translateSupabaseError(resourcesRes.error);
+      if (modelsRes.error) throw translateSupabaseError(modelsRes.error);
+      if (lotsRes.error) throw translateSupabaseError(lotsRes.error);
+      if (recordsRes.error) throw translateSupabaseError(recordsRes.error);
 
-    const users = (usersRes.data || []).map(mapUserRow);
-    const resources = (resourcesRes.data || []).map(mapResourceRow);
-    const models = (modelsRes.data || []).map(mapModelRow);
-    const lots = (lotsRes.data || []).map(mapLotRow);
-    const records = (recordsRes.data || []).map(mapRecordRow);
+      const users = (usersRes.data || []).map(mapUserRow);
+      const resources = (resourcesRes.data || []).map(mapResourceRow);
+      const models = (modelsRes.data || []).map(mapModelRow);
+      const lots = (lotsRes.data || []).map(mapLotRow);
+      const records = (recordsRes.data || []).map(mapRecordRow);
 
-    localStorage.setItem(USER_CACHE_KEY, JSON.stringify(users));
-    localStorage.setItem(RESOURCE_CACHE_KEY, JSON.stringify(resources));
-    localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(models));
-    localStorage.setItem(LOT_CACHE_KEY, JSON.stringify(lots));
-    localStorage.setItem(LOCAL_LOTS_KEY, JSON.stringify(lots));
-    setCache(records);
+      localStorage.setItem(USER_CACHE_KEY, JSON.stringify(users));
+      localStorage.setItem(RESOURCE_CACHE_KEY, JSON.stringify(resources));
+      localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(models));
+      localStorage.setItem(LOT_CACHE_KEY, JSON.stringify(lots));
+      localStorage.setItem(LOCAL_LOTS_KEY, JSON.stringify(lots));
+      setCache(records);
 
-    return {
-      Config_Usuarios: users,
-      Cadastro_Recursos_Turno: resources,
-      Cadastro_Modelos: models,
-      Cadastro_Lista_Lotes: lots,
-      TB_Apontamentos: records,
-      offline: false
-    };
+      return {
+        Config_Usuarios: users,
+        Cadastro_Recursos_Turno: resources,
+        Cadastro_Modelos: models,
+        Cadastro_Lista_Lotes: lots,
+        TB_Apontamentos: records,
+        offline: false
+      };
+    } catch (err) {
+      if (isAuthorizationError(err)) throw err;
+      return offlineSnapshot();
+    }
   }
 
   function subscribeRealtime(onSnapshotUpdate, onStatusChange) {
@@ -850,6 +896,9 @@ const DB = (() => {
   }
 
   async function testConnection() {
+    if (!hasValidSupabaseConfig()) {
+      throw apiError('Cole a chave anon pública do Supabase na linha 8 do db.js (começa com eyJ... ou sb_publishable_...).', 'CONFIG_REQUIRED');
+    }
     return sendOrQueue({ action: 'test_connection' });
   }
 
@@ -860,11 +909,7 @@ const DB = (() => {
       snapshot = await sincronizarLeitura();
     } catch (error) {
       if (isAuthorizationError(error)) throw error;
-      snapshot = {
-        TB_Apontamentos: getCache(),
-        Cadastro_Lista_Lotes: readArray(LOT_CACHE_KEY, []),
-        Cadastro_Recursos_Turno: getCachedResources()
-      };
+      snapshot = offlineSnapshot();
     }
     return { sent, records: getCache(), snapshot };
   }
