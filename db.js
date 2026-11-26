@@ -5,7 +5,6 @@ const DB = (() => {
   // 1. CONFIGURAÇÃO DO SUPABASE (TEMPO REAL < 0,3s) + ESPELHO GOOGLE SHEETS
   // =========================================================================
   const SUPABASE_URL = 'https://ywwaoyqskngbivvpxgny.supabase.co';
-  // Cole aqui a chave "anon / public" (começa com eyJ... ou sb_publishable_...) de Project Settings > API:
   const SUPABASE_ANON_KEY = 'sb_publishable_5RdyvbPoKKpDgBMJEiNgcQ_bGxQ7yIz';
   const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbxhdG44T6jX-f7_iH1xH28Q0lT-q0y8P1B-3l2gR9s2wK60/exec';
 
@@ -25,13 +24,14 @@ const DB = (() => {
   const LOT_PROGRESS_KEY = 'Progresso_Lotes';
 
   const FALLBACK_USERS = [
-    { Matricula: '1001', Nome: 'Eric Miranda', PIN: '1234', Perfil: 'ADMIN_GERAL', Turno_Vinculado: 'TODOS', Ativo: 'SIM' },
+    { Matricula: '9165', Nome: 'Eric Miranda', PIN: '9165', Perfil: 'ADMIN_GERAL', Turno_Vinculado: 'TODOS', Ativo: 'SIM' },
+    { Matricula: '1001', Nome: 'Admin Reserva', PIN: '1234', Perfil: 'ADMIN_GERAL', Turno_Vinculado: 'TODOS', Ativo: 'SIM' },
     { Matricula: '1002', Nome: 'Daniela Menezes', PIN: '2026', Perfil: 'LIDER_TURNO', Turno_Vinculado: 'Turno B', Ativo: 'SIM' },
     { Matricula: '1003', Nome: 'Operador Pátio', PIN: '0000', Perfil: 'OPERADOR', Turno_Vinculado: 'Turno B', Ativo: 'SIM' }
   ];
 
   const FALLBACK_RESOURCES = [
-    { ID_Recurso: 'seed-m1', Tipo: 'MOTORISTA', Nome: 'JOSE', Turno_Vinculado: 'Turno B', Ativo: 'SIM' },
+    { ID_Recurso: 'seed-m1', Tipo: 'MOTORISTA', Nome: 'ANGELO', Turno_Vinculado: 'Turno B', Ativo: 'SIM' },
     { ID_Recurso: 'seed-m2', Tipo: 'MOTORISTA', Nome: 'GENILSON', Turno_Vinculado: 'Turno B', Ativo: 'SIM' },
     { ID_Recurso: 'seed-m3', Tipo: 'MOTORISTA', Nome: 'ELIVALDO', Turno_Vinculado: 'Turno B', Ativo: 'SIM' },
     { ID_Recurso: 'seed-m4', Tipo: 'MOTORISTA', Nome: 'JUCIE', Turno_Vinculado: 'Turno B', Ativo: 'SIM' },
@@ -48,6 +48,9 @@ const DB = (() => {
   let realtimeChannel = null;
   let realtimeConnected = false;
   let realtimeDebounceTimer = null;
+  let realtimeReconnectTimer = null;
+  let lastRealtimeHandlers = { onSnapshotUpdate: null, onStatusChange: null };
+  let syncInFlight = null;
 
   function hasValidSupabaseConfig() {
     const url = String(SUPABASE_URL || '').trim();
@@ -120,10 +123,13 @@ const DB = (() => {
   function translateSupabaseError(err) {
     const msg = String(err && (err.message || err.details || err.hint) || '');
     if (/invalid api key|jwt|apikey/i.test(msg)) {
-      return apiError('Chave do Supabase inválida. Confira no painel Project Settings > API e cole a chave anon completa no topo do db.js.', 'CONFIG_REQUIRED');
+      return apiError('Chave do Supabase inválida. Confira Project Settings > API no painel.', 'CONFIG_REQUIRED');
     }
     if (/duplicate key|unique constraint/i.test(msg)) {
       return apiError('Registro duplicado no banco de dados.', 'DUPLICATE_MATRICULA');
+    }
+    if (/violates check constraint|violates foreign key|invalid input syntax/i.test(msg)) {
+      return apiError(`Dados rejeitados pelo banco: ${msg}`, 'INVALID_INPUT');
     }
     if (/load failed|failed to fetch|networkerror|fetch/i.test(msg)) {
       return apiError('Falha de rede ao conectar com o Supabase.', 'NETWORK_ERROR');
@@ -221,7 +227,7 @@ const DB = (() => {
   }
 
   // =========================================================================
-  // 3. SESSÃO E AUTENTICAÇÃO (COM FALLBACK OFFLINE SEGURO)
+  // 3. SESSÃO E AUTENTICAÇÃO
   // =========================================================================
   function normalizeSession(source) {
     if (!source || typeof source !== 'object') return null;
@@ -229,17 +235,17 @@ const DB = (() => {
     const matricula = String(source.Matricula || user.Matricula || '').trim();
     const nome = String(source.Nome || user.Nome || user.Nome_Completo || '').trim();
     let perfil = String(source.Perfil || user.Perfil || '').toUpperCase();
-    if (perfil === 'ADMIN') perfil = matricula === '1001' ? 'ADMIN_GERAL' : 'LIDER_TURNO';
+    if (perfil === 'ADMIN') perfil = ['9165', '1001'].includes(matricula) ? 'ADMIN_GERAL' : 'LIDER_TURNO';
     const normalizeTurn = (value) => {
       const turnValue = String(value || '').trim();
       if (/^TODOS$/i.test(turnValue)) return 'TODOS';
       if (/^GERAL$/i.test(turnValue)) return 'Geral';
       if (/^Turno\s+[ABC]$/i.test(turnValue)) return `Turno ${turnValue.slice(-1).toUpperCase()}`;
       if (/^[ABC]$/i.test(turnValue)) return `Turno ${turnValue.toUpperCase()}`;
-      return turnValue || 'Turno A';
+      return turnValue || 'Turno B';
     };
     const linkedTurn = normalizeTurn(source.Turno_Vinculado || user.Turno_Vinculado || source.Turno);
-    const turn = normalizeTurn(source.Turno || (perfil === 'ADMIN_GERAL' ? 'Turno A' : linkedTurn));
+    const turn = normalizeTurn(source.Turno || (perfil === 'ADMIN_GERAL' ? 'Turno B' : linkedTurn));
     return {
       ...source,
       Matricula: matricula,
@@ -355,7 +361,7 @@ const DB = (() => {
   async function authenticate(credentials) {
     const matricula = String(credentials.Matricula || '').trim();
     const pin = String(credentials.PIN === null || credentials.PIN === undefined ? '' : credentials.PIN).trim();
-    const turno = String(credentials.Turno || 'Turno A').trim();
+    const turno = String(credentials.Turno || 'Turno B').trim();
     const sb = getSupabase();
 
     if (sb && navigator.onLine) {
@@ -467,10 +473,18 @@ const DB = (() => {
     return String(value || '').replace(/^Turno\s+/i, '').trim().toUpperCase();
   }
 
+  function normalizeShiftForSql(value) {
+    const key = turnKey(value);
+    if (key === 'A') return 'Turno A';
+    if (key === 'B') return 'Turno B';
+    if (key === 'C') return 'Turno C';
+    return 'Turno B';
+  }
+
   async function executeSupabaseWrite(payload, session) {
     const sb = getSupabase();
     if (!sb) {
-      throw apiError('Supabase aguardando chave anon válida em db.js (salvando localmente).', 'NETWORK_ERROR');
+      throw apiError('Supabase indisponível no momento (salvando localmente).', 'NETWORK_ERROR');
     }
 
     const role = String(session.Perfil || '').toUpperCase();
@@ -485,7 +499,7 @@ const DB = (() => {
         ok: true,
         message: mirrored
           ? 'Supabase Tempo Real (<0,3s) + Espelho Google Sheets conectados com sucesso!'
-          : 'Supabase conectado! (Verifique a URL do Apps Script se precisar do espelho na planilha).'
+          : 'Supabase conectado em Tempo Real (<0,3s)!'
       };
     }
 
@@ -498,7 +512,7 @@ const DB = (() => {
         hora_ref: String(item.Hora_Ref),
         operador: String(item.Operador || session.Nome),
         matricula_operador: String(session.Matricula || ''),
-        turno: String(item.Turno),
+        turno: normalizeShiftForSql(item.Turno),
         nome_lote: String(item.Nome_Lote),
         modelo_base: String(item.Modelo_Base),
         componente: String(item.Componente),
@@ -509,7 +523,7 @@ const DB = (() => {
         motivo_estorno: '',
         observacao_auditoria: ''
       }));
-      const { error } = await sb.from('apontamentos').insert(rows);
+      const { error } = await sb.from('apontamentos').upsert(rows, { onConflict: 'id_apontamento' });
       if (error) throw translateSupabaseError(error);
       mirrorToSheets(payload);
       return { ok: true };
@@ -546,7 +560,7 @@ const DB = (() => {
         id_lote: String(payload.ID_Lote),
         nome_lote: String(payload.Nome_Lote).trim(),
         modelo_base: String(payload.Modelo_Base).trim(),
-        turno_vinculado: String(payload.Turno_Vinculado),
+        turno_vinculado: normalizeShiftForSql(payload.Turno_Vinculado),
         ativo: 'SIM',
         data_criacao: payload.Data_Criacao || new Date().toISOString()
       };
@@ -593,7 +607,7 @@ const DB = (() => {
       const original = String(payload.Matricula_Original || '').trim();
       const targetMatricula = String(payload.Matricula || '').trim();
       const targetPerfil = String(payload.Perfil || 'OPERADOR').toUpperCase();
-      const targetTurno = targetPerfil === 'ADMIN_GERAL' ? 'TODOS' : String(payload.Turno_Vinculado || 'Turno B');
+      const targetTurno = targetPerfil === 'ADMIN_GERAL' ? 'TODOS' : normalizeShiftForSql(payload.Turno_Vinculado);
       const targetAtivo = String(payload.Ativo || 'SIM').toUpperCase();
 
       if (isLeader) {
@@ -637,7 +651,8 @@ const DB = (() => {
       const tipo = String(payload.Tipo || 'MOTORISTA').toUpperCase();
       const nome = String(payload.Nome || '').trim().toUpperCase();
       const ativo = String(payload.Ativo || 'SIM').toUpperCase();
-      const turno = isLeader ? session.Turno_Vinculado : String(payload.Turno_Vinculado || 'Turno B');
+      const rawTurno = isLeader ? session.Turno_Vinculado : String(payload.Turno_Vinculado || 'Turno B');
+      const turno = turnKey(rawTurno) === 'TODOS' ? 'TODOS' : normalizeShiftForSql(rawTurno);
 
       if (!nome || !['MOTORISTA', 'FROTA'].includes(tipo)) {
         throw apiError('Informe um tipo e nome válidos.', 'INVALID_INPUT');
@@ -751,7 +766,9 @@ const DB = (() => {
         await executeSupabaseWrite(payload, session);
         sent++;
       } catch (error) {
-        if (['INVALID_ACTION', 'NOT_FOUND'].includes(error.code)) continue;
+        if (['INVALID_ACTION', 'NOT_FOUND', 'INVALID_INPUT', 'DUPLICATE_MATRICULA'].includes(error.code)) {
+          continue;
+        }
         if (isAuthorizationError(error)) {
           setQueue(remaining.concat(queue.slice(index)));
           throw error;
@@ -811,54 +828,67 @@ const DB = (() => {
   }
 
   async function sincronizarLeitura() {
-    const sb = getSupabase();
-    if (!sb || !navigator.onLine) {
-      return offlineSnapshot();
-    }
+    if (syncInFlight) return syncInFlight;
 
-    try {
-      const [usersRes, resourcesRes, modelsRes, lotsRes, recordsRes] = await Promise.all([
-        sb.from('usuarios').select('*').order('nome'),
-        sb.from('recursos_turno').select('*').order('nome'),
-        sb.from('modelos').select('*').order('modelo_base'),
-        sb.from('lotes').select('*').eq('ativo', 'SIM').order('data_criacao'),
-        sb.from('apontamentos').select('*').order('data_hora', { ascending: false }).limit(800)
-      ]);
+    syncInFlight = (async () => {
+      const sb = getSupabase();
+      if (!sb || !navigator.onLine) {
+        return offlineSnapshot();
+      }
 
-      if (usersRes.error) throw translateSupabaseError(usersRes.error);
-      if (resourcesRes.error) throw translateSupabaseError(resourcesRes.error);
-      if (modelsRes.error) throw translateSupabaseError(modelsRes.error);
-      if (lotsRes.error) throw translateSupabaseError(lotsRes.error);
-      if (recordsRes.error) throw translateSupabaseError(recordsRes.error);
+      try {
+        if (getQueue().length) {
+          await syncQueue().catch(() => 0);
+        }
 
-      const users = (usersRes.data || []).map(mapUserRow);
-      const resources = (resourcesRes.data || []).map(mapResourceRow);
-      const models = (modelsRes.data || []).map(mapModelRow);
-      const lots = (lotsRes.data || []).map(mapLotRow);
-      const records = (recordsRes.data || []).map(mapRecordRow);
+        const [usersRes, resourcesRes, modelsRes, lotsRes, recordsRes] = await Promise.all([
+          sb.from('usuarios').select('*').order('nome'),
+          sb.from('recursos_turno').select('*').order('nome'),
+          sb.from('modelos').select('*').order('modelo_base'),
+          sb.from('lotes').select('*').eq('ativo', 'SIM').order('data_criacao'),
+          sb.from('apontamentos').select('*').order('data_hora', { ascending: false }).limit(800)
+        ]);
 
-      localStorage.setItem(USER_CACHE_KEY, JSON.stringify(users));
-      localStorage.setItem(RESOURCE_CACHE_KEY, JSON.stringify(resources));
-      localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(models));
-      localStorage.setItem(LOT_CACHE_KEY, JSON.stringify(lots));
-      localStorage.setItem(LOCAL_LOTS_KEY, JSON.stringify(lots));
-      setCache(records);
+        if (usersRes.error) throw translateSupabaseError(usersRes.error);
+        if (resourcesRes.error) throw translateSupabaseError(resourcesRes.error);
+        if (modelsRes.error) throw translateSupabaseError(modelsRes.error);
+        if (lotsRes.error) throw translateSupabaseError(lotsRes.error);
+        if (recordsRes.error) throw translateSupabaseError(recordsRes.error);
 
-      return {
-        Config_Usuarios: users,
-        Cadastro_Recursos_Turno: resources,
-        Cadastro_Modelos: models,
-        Cadastro_Lista_Lotes: lots,
-        TB_Apontamentos: records,
-        offline: false
-      };
-    } catch (err) {
-      if (isAuthorizationError(err)) throw err;
-      return offlineSnapshot();
-    }
+        const users = (usersRes.data || []).map(mapUserRow);
+        const resources = (resourcesRes.data || []).map(mapResourceRow);
+        const models = (modelsRes.data || []).map(mapModelRow);
+        const lots = (lotsRes.data || []).map(mapLotRow);
+        const records = (recordsRes.data || []).map(mapRecordRow);
+
+        localStorage.setItem(USER_CACHE_KEY, JSON.stringify(users));
+        localStorage.setItem(RESOURCE_CACHE_KEY, JSON.stringify(resources));
+        localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(models));
+        localStorage.setItem(LOT_CACHE_KEY, JSON.stringify(lots));
+        localStorage.setItem(LOCAL_LOTS_KEY, JSON.stringify(lots));
+        setCache(records);
+
+        return {
+          Config_Usuarios: users,
+          Cadastro_Recursos_Turno: resources,
+          Cadastro_Modelos: models,
+          Cadastro_Lista_Lotes: lots,
+          TB_Apontamentos: records,
+          offline: false
+        };
+      } catch (err) {
+        if (isAuthorizationError(err)) throw err;
+        return offlineSnapshot();
+      } finally {
+        syncInFlight = null;
+      }
+    })();
+
+    return syncInFlight;
   }
 
   function subscribeRealtime(onSnapshotUpdate, onStatusChange) {
+    lastRealtimeHandlers = { onSnapshotUpdate, onStatusChange };
     const sb = getSupabase();
     if (!sb) return;
     stopRealtime();
@@ -870,11 +900,11 @@ const DB = (() => {
           const snapshot = await sincronizarLeitura();
           if (typeof onSnapshotUpdate === 'function') onSnapshotUpdate(snapshot);
         } catch (_) {}
-      }, 120);
+      }, 150);
     };
 
     realtimeChannel = sb
-      .channel('byd-entrega-materiais-live')
+      .channel(`byd-entrega-live-${Date.now()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'apontamentos' }, triggerFastSync)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'lotes' }, triggerFastSync)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'recursos_turno' }, triggerFastSync)
@@ -883,12 +913,22 @@ const DB = (() => {
       .subscribe((status) => {
         realtimeConnected = status === 'SUBSCRIBED';
         if (typeof onStatusChange === 'function') onStatusChange(status, realtimeConnected);
+
+        if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status) && getSession() && navigator.onLine) {
+          clearTimeout(realtimeReconnectTimer);
+          realtimeReconnectTimer = setTimeout(() => {
+            if (getSession() && !realtimeConnected && lastRealtimeHandlers.onSnapshotUpdate) {
+              subscribeRealtime(lastRealtimeHandlers.onSnapshotUpdate, lastRealtimeHandlers.onStatusChange);
+            }
+          }, 3000);
+        }
       });
   }
 
   function stopRealtime() {
     realtimeConnected = false;
     clearTimeout(realtimeDebounceTimer);
+    clearTimeout(realtimeReconnectTimer);
     if (realtimeChannel && supabaseClient) {
       try { supabaseClient.removeChannel(realtimeChannel); } catch (_) {}
     }
@@ -896,9 +936,6 @@ const DB = (() => {
   }
 
   async function testConnection() {
-    if (!hasValidSupabaseConfig()) {
-      throw apiError('Cole a chave anon pública do Supabase na linha 8 do db.js (começa com eyJ... ou sb_publishable_...).', 'CONFIG_REQUIRED');
-    }
     return sendOrQueue({ action: 'test_connection' });
   }
 
