@@ -4,9 +4,14 @@ const DB = (() => {
   // =========================================================================
   // 1. CONFIGURAÇÃO DO SUPABASE (TEMPO REAL < 0,3s) + ESPELHO GOOGLE SHEETS
   // =========================================================================
-  const SUPABASE_URL = 'https://ywwaoyqskngbivvpxgny.supabase.co';
+  const SUPABASE_URL = 'https://nsyrvgmdkdhznexbsqwz.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_5RdyvbPoKKpDgBMJEiNgcQ_bGxQ7yIz';
   const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbxhdG44T6jX-f7_iH1xH28Q0lT-q0y8P1B-3l2gR9s2wK60/exec';
+
+  const SUPABASE_SDK_URLS = [
+    'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',
+    'https://unpkg.com/@supabase/supabase-js@2'
+  ];
 
   const CONFIG_KEY = 'byd_apps_script_url';
   const CACHE_KEY = 'byd_records_cache_v1';
@@ -45,6 +50,7 @@ const DB = (() => {
   ];
 
   let supabaseClient = null;
+  let sdkLoadPromise = null;
   let realtimeChannel = null;
   let realtimeConnected = false;
   let realtimeDebounceTimer = null;
@@ -58,6 +64,57 @@ const DB = (() => {
     if (!url.startsWith('https://') || !key) return false;
     if (key.startsWith('postgresql://') || key.includes('COLE_SUA_CHAVE')) return false;
     return /^(eyJ|sb_publishable_)/.test(key);
+  }
+
+  function loadExternalScript(src) {
+    return new Promise((resolve, reject) => {
+      const existing = document.querySelector(`script[src="${src}"]`);
+      if (existing) {
+        if (window.supabase && typeof window.supabase.createClient === 'function') {
+          resolve();
+          return;
+        }
+        existing.addEventListener('load', () => resolve(), { once: true });
+        existing.addEventListener('error', () => reject(new Error(`Falha ao carregar ${src}`)), { once: true });
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = src;
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error(`Falha ao carregar ${src}`));
+      document.head.appendChild(script);
+    });
+  }
+
+  async function ensureSupabase() {
+    if (supabaseClient) return supabaseClient;
+    if (!hasValidSupabaseConfig()) return null;
+
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+      if (!sdkLoadPromise) {
+        sdkLoadPromise = (async () => {
+          for (const url of SUPABASE_SDK_URLS) {
+            try {
+              await loadExternalScript(url);
+              if (window.supabase && typeof window.supabase.createClient === 'function') return;
+            } catch (_) {}
+          }
+        })().finally(() => {
+          sdkLoadPromise = null;
+        });
+      }
+      await sdkLoadPromise;
+    }
+
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+      return null;
+    }
+
+    supabaseClient = window.supabase.createClient(SUPABASE_URL.trim(), SUPABASE_ANON_KEY.trim(), {
+      realtime: { params: { eventsPerSecond: 20 } }
+    });
+    return supabaseClient;
   }
 
   function getSupabase() {
@@ -140,16 +197,8 @@ const DB = (() => {
   function isAuthorizationError(error) {
     return [
       'AUTH_REQUIRED', 'FORBIDDEN', 'INVALID_CREDENTIALS', 'INVALID_INPUT',
-      'NOT_FOUND', 'INVALID_ACTION', 'DUPLICATE_MATRICULA', 'LAST_ADMIN', 'LOT_HAS_RECORDS'
+      'NOT_FOUND', 'INVALID_ACTION', 'DUPLICATE_MATRICULA', 'LAST_ADMIN', 'LOT_HAS_RECORDS', 'CONFIG_REQUIRED'
     ].includes(error.code);
-  }
-
-  function isNetworkError(error) {
-    if (!navigator.onLine || !error) return !navigator.onLine;
-    const msg = String(error.message || '');
-    return error.code === 'NETWORK_ERROR' ||
-      error instanceof TypeError ||
-      /load failed|failed to fetch|networkerror/i.test(msg);
   }
 
   // =========================================================================
@@ -362,9 +411,13 @@ const DB = (() => {
     const matricula = String(credentials.Matricula || '').trim();
     const pin = String(credentials.PIN === null || credentials.PIN === undefined ? '' : credentials.PIN).trim();
     const turno = String(credentials.Turno || 'Turno B').trim();
-    const sb = getSupabase();
 
-    if (sb && navigator.onLine) {
+    if (!navigator.onLine) {
+      return authenticateLocal(matricula, pin, turno);
+    }
+
+    const sb = await ensureSupabase();
+    if (sb) {
       try {
         const { data, error } = await sb
           .from('usuarios')
@@ -374,7 +427,7 @@ const DB = (() => {
 
         if (error) {
           const translated = translateSupabaseError(error);
-          if (isNetworkError(translated) || translated.code === 'CONFIG_REQUIRED') {
+          if (translated.code === 'NETWORK_ERROR') {
             return authenticateLocal(matricula, pin, turno);
           }
           throw translated;
@@ -450,19 +503,19 @@ const DB = (() => {
     const sb = getSupabase();
     if (!sb) return;
     try {
-      if (payload.action === 'criar_viagem' && Array.isArray(payload.itens)) {
+      if (['criar_viagem', 'criar_apontamento'].includes(payload.action) && Array.isArray(payload.itens)) {
         const ids = payload.itens.map((i) => i.ID_Apontamento).filter(Boolean);
         if (ids.length) await sb.from('apontamentos').update({ sheets_synced: true }).in('id_apontamento', ids);
-      } else if (['editar_apontamento', 'reverse'].includes(payload.action) && payload.ID_Apontamento) {
+      } else if (['editar_apontamento', 'reverse', 'estornar_apontamento'].includes(payload.action) && payload.ID_Apontamento) {
         await sb.from('apontamentos').update({ sheets_synced: true }).eq('id_apontamento', payload.ID_Apontamento);
-      } else if (payload.action === 'salvar_lote' && payload.ID_Lote) {
+      } else if (['salvar_lote', 'criar_lote'].includes(payload.action) && payload.ID_Lote) {
         await sb.from('lotes').update({ sheets_synced: true }).eq('id_lote', payload.ID_Lote);
       }
     } catch (_) {}
   }
 
   // =========================================================================
-  // 5. OPERAÇÕES DE ESCRITA NO SUPABASE + FILA OFFLINE
+  // 5. OPERAÇÕES DE ESCRITA NO SUPABASE + FILA OFFLINE APENAS SEM INTERNET
   // =========================================================================
   function assertPermission(session, checkFn, message = 'Seu perfil não tem permissão para esta ação.') {
     if (!session) throw apiError('Faça login para continuar.', 'AUTH_REQUIRED');
@@ -482,9 +535,9 @@ const DB = (() => {
   }
 
   async function executeSupabaseWrite(payload, session) {
-    const sb = getSupabase();
+    const sb = await ensureSupabase();
     if (!sb) {
-      throw apiError('Supabase indisponível no momento (salvando localmente).', 'NETWORK_ERROR');
+      throw apiError('Não foi possível carregar o cliente Supabase. Verifique sua conexão e recarregue a página.', 'CONFIG_REQUIRED');
     }
 
     const role = String(session.Perfil || '').toUpperCase();
@@ -503,8 +556,9 @@ const DB = (() => {
       };
     }
 
-    if (payload.action === 'criar_viagem') {
-      const rows = (payload.itens || []).map((item) => ({
+    if (['criar_viagem', 'criar_apontamento'].includes(payload.action)) {
+      const sourceItems = Array.isArray(payload.itens) ? payload.itens : [payload];
+      const rows = sourceItems.map((item) => ({
         id_apontamento: String(item.ID_Apontamento),
         id_viagem: String(item.ID_Viagem || payload.ID_Viagem || ''),
         data_hora: item.DataHora || new Date().toISOString(),
@@ -544,7 +598,7 @@ const DB = (() => {
       return { ok: true };
     }
 
-    if (payload.action === 'reverse') {
+    if (['reverse', 'estornar_apontamento'].includes(payload.action)) {
       const { error } = await sb.from('apontamentos').update({
         status: 'ESTORNADO',
         motivo_estorno: String(payload.Motivo_Estorno),
@@ -555,7 +609,7 @@ const DB = (() => {
       return { ok: true };
     }
 
-    if (payload.action === 'salvar_lote') {
+    if (['salvar_lote', 'criar_lote'].includes(payload.action)) {
       const row = {
         id_lote: String(payload.ID_Lote),
         nome_lote: String(payload.Nome_Lote).trim(),
@@ -570,7 +624,7 @@ const DB = (() => {
       return { ok: true };
     }
 
-    if (payload.action === 'excluir_lote') {
+    if (['excluir_lote', 'deletar_lote'].includes(payload.action)) {
       let query = sb.from('lotes').delete();
       if (payload.ID_Lote) query = query.eq('id_lote', String(payload.ID_Lote));
       else query = query.eq('nome_lote', String(payload.Nome_Lote)).eq('modelo_base', String(payload.Modelo_Base));
@@ -644,6 +698,20 @@ const DB = (() => {
         users: mappedUsers,
         sessionRevoked: targetMatricula === session.Matricula && targetAtivo !== 'SIM'
       };
+    }
+
+    if (['excluir_usuario', 'deletar_usuario'].includes(payload.action)) {
+      assertPermission(session, () => isAdmin, 'Somente ADMIN_GERAL pode remover usuários.');
+      const targetMatricula = String(payload.Matricula || '').trim();
+      if (!targetMatricula || targetMatricula === session.Matricula) {
+        throw apiError('Não é permitido excluir o usuário atualmente logado.', 'FORBIDDEN');
+      }
+      const { error } = await sb.from('usuarios').delete().eq('matricula', targetMatricula);
+      if (error) throw translateSupabaseError(error);
+      const { data: allUsers } = await sb.from('usuarios').select('*').order('nome');
+      const mappedUsers = Array.isArray(allUsers) ? allUsers.map(mapUserRow) : [];
+      localStorage.setItem(USER_CACHE_KEY, JSON.stringify(mappedUsers));
+      return { ok: true, users: mappedUsers };
     }
 
     if (payload.action === 'salvar_recurso') {
@@ -725,7 +793,7 @@ const DB = (() => {
     }
     const queue = getQueue();
     const id = queueItem.ID_Apontamento || queueItem.ID_Lote || queueItem.ID_Viagem || queueItem.ID_Recurso;
-    if (id && !['editar_apontamento', 'reverse', 'salvar_recurso'].includes(queueItem.action)) {
+    if (id && !['editar_apontamento', 'reverse', 'estornar_apontamento', 'salvar_recurso'].includes(queueItem.action)) {
       const sameItem = queue.some((item) =>
         (item.ID_Apontamento || item.ID_Lote || item.ID_Viagem || item.ID_Recurso) === id && item.action === queueItem.action
       );
@@ -738,26 +806,23 @@ const DB = (() => {
   async function sendOrQueue(payload) {
     const activeSession = getSession();
     if (!activeSession) throw apiError('Faça login para continuar.', 'AUTH_REQUIRED');
+
     if (!navigator.onLine) {
       enqueue(payload);
-      throw apiError('Sem internet. Salvo na fila do celular para enviar assim que voltar o sinal.', 'NETWORK_ERROR');
+      throw apiError('Sem internet. Salvo na fila offline para envio automático ao reconectar.', 'NETWORK_ERROR');
     }
-    try {
-      return await executeSupabaseWrite(payload, activeSession);
-    } catch (error) {
-      if (isAuthorizationError(error)) throw error;
-      if (isNetworkError(error)) {
-        enqueue(payload);
-        throw error;
-      }
-      throw error;
-    }
+
+    return await executeSupabaseWrite(payload, activeSession);
   }
 
   async function syncQueue() {
     const queue = getQueue();
     const session = getSession();
-    if (!queue.length || !session || !navigator.onLine || !getSupabase()) return 0;
+    if (!queue.length || !session || !navigator.onLine) return 0;
+
+    const sb = await ensureSupabase();
+    if (!sb) return 0;
+
     const remaining = [];
     let sent = 0;
     for (let index = 0; index < queue.length; index++) {
@@ -831,8 +896,12 @@ const DB = (() => {
     if (syncInFlight) return syncInFlight;
 
     syncInFlight = (async () => {
-      const sb = getSupabase();
-      if (!sb || !navigator.onLine) {
+      if (!navigator.onLine) {
+        return offlineSnapshot();
+      }
+
+      const sb = await ensureSupabase();
+      if (!sb) {
         return offlineSnapshot();
       }
 
@@ -887,9 +956,9 @@ const DB = (() => {
     return syncInFlight;
   }
 
-  function subscribeRealtime(onSnapshotUpdate, onStatusChange) {
+  async function subscribeRealtime(onSnapshotUpdate, onStatusChange) {
     lastRealtimeHandlers = { onSnapshotUpdate, onStatusChange };
-    const sb = getSupabase();
+    const sb = await ensureSupabase();
     if (!sb) return;
     stopRealtime();
 
