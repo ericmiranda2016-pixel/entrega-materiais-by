@@ -1439,40 +1439,62 @@
     const model = el('settingsModelSelect').value;
     const definition = CATALOG[model];
     const container = el('modelComponentsEditor');
-    container.innerHTML = definition.components.map((component, index) => `
+    const slots = [0, 1, 2, 3].map((index) => {
+      const existing = definition.components[index] || { name: '', meta: 0 };
+      const isOptional = index === 3;
+      return `
       <div class="model-editor-grid">
         <label>
-          <span class="field-label">Componente ${index + 1}</span>
-          <input class="control model-component-name" maxlength="100" required value="${escapeHtml(component.name)}">
+          <span class="field-label">Componente ${index + 1}${isOptional ? ' (Opcional)' : ''}</span>
+          <input class="control model-component-name" data-slot="${index}" maxlength="100" ${isOptional ? 'placeholder="Deixe vazio se usar 3"' : 'required'} value="${escapeHtml(existing.name)}">
         </label>
         <label>
           <span class="field-label">Meta</span>
-          <input class="control model-component-meta" type="number" min="0" step="1" required value="${component.meta}">
+          <input class="control model-component-meta" data-slot="${index}" type="number" min="0" step="1" ${isOptional ? '' : 'required'} value="${existing.meta}">
         </label>
-      </div>`).join('') + `
+      </div>`;
+    }).join('');
+
+    container.innerHTML = slots + `
+      <p class="muted-small">O Componente 4 é opcional: preencha nome e meta apenas nos modelos que precisarem de 4 materiais.</p>
       <label>
         <span class="field-label">Total_Meta</span>
         <input id="modelTotalInput" class="control" type="number" min="0" step="1" value="${definition.total}" readonly>
       </label>`;
-    container.querySelectorAll('.model-component-meta').forEach((input) =>
+
+    container.querySelectorAll('.model-component-meta, .model-component-name').forEach((input) =>
       input.addEventListener('input', updateModelTotal)
     );
+    updateModelTotal();
   }
 
   function updateModelTotal() {
-    const total = [...document.querySelectorAll('.model-component-meta')]
-      .reduce((sum, input) => sum + (Number(input.value) || 0), 0);
+    const names = [...document.querySelectorAll('.model-component-name')];
+    const metas = [...document.querySelectorAll('.model-component-meta')];
+    const total = metas.reduce((sum, input, index) => {
+      const value = Number(input.value) || 0;
+      if (index === 3 && !names[index]?.value.trim() && value === 0) return sum;
+      return sum + value;
+    }, 0);
     el('modelTotalInput').value = String(total);
   }
 
   function captureModelForm() {
     const names = [...document.querySelectorAll('.model-component-name')];
     const metas = [...document.querySelectorAll('.model-component-meta')];
-    const components = names.map((input, index) => ({
-      Nome: input.value.trim(),
-      Meta: Number(metas[index].value)
-    }));
-    return { Modelo_Base: el('settingsModelSelect').value, Componentes: components, Total_Meta: Number(el('modelTotalInput').value) };
+    const components = [];
+    for (let index = 0; index < names.length; index++) {
+      const nome = names[index].value.trim();
+      const metaRaw = metas[index].value.trim();
+      const meta = metaRaw === '' ? 0 : Number(metaRaw);
+      if (index === 3 && !nome && meta === 0) continue;
+      components.push({ Nome: nome, Meta: meta, slot: index + 1 });
+    }
+    return {
+      Modelo_Base: el('settingsModelSelect').value,
+      Componentes: components,
+      Total_Meta: components.reduce((sum, item) => sum + (Number(item.Meta) || 0), 0)
+    };
   }
 
   async function saveModel() {
@@ -1480,17 +1502,24 @@
       showToast('Somente ADMIN_GERAL pode alterar materiais e metas.');
       return;
     }
-    const payload = { action: 'salvar_modelo', ...captureModelForm() };
-    if (payload.Componentes.some((item) => !item.Nome || !Number.isInteger(item.Meta) || item.Meta < 0)) {
-      showToast('Informe componentes e metas inteiras válidas.');
+    const captured = captureModelForm();
+    if (captured.Componentes.length < 3 || captured.Componentes.some((item) => !item.Nome || !Number.isInteger(item.Meta) || item.Meta < 0)) {
+      showToast('Informe o nome e metas inteiras válidas (preencha o nome do Componente 4 ou zere a meta dele).', 4500);
       return;
     }
+    const cleanComponents = captured.Componentes.map(({ Nome, Meta }) => ({ Nome, Meta }));
+    const payload = {
+      action: 'salvar_modelo',
+      Modelo_Base: captured.Modelo_Base,
+      Componentes: cleanComponents,
+      Total_Meta: captured.Total_Meta
+    };
     const button = el('saveModelButton');
     button.disabled = true;
     try {
       try {
         await DB.sendOrQueue(payload);
-        showToast('Modelo e metas atualizados em tempo real.');
+        showToast('⚡ Modelo e metas atualizados em tempo real!');
       } catch (error) {
         if (!queued(payload)) {
           if (goToLoginIfUnauthorized(error)) return;
@@ -1504,6 +1533,8 @@
         Total_Meta: payload.Total_Meta
       };
       applyModels([updated, ...modelList().filter((item) => item.Modelo_Base !== updated.Modelo_Base)]);
+      lotProgress = deriveLocalProgress();
+      localStorage.setItem('Progresso_Lotes', JSON.stringify(lotProgress));
       renderModelSelect(updated.Modelo_Base);
       persistAdminCache();
       renderSelectedLot();
