@@ -8,6 +8,8 @@ const Cockpit = (() => {
   let lastPngFilename = 'cockpit-byd.png';
   let listenersAttached = false;
 
+  const FONT_SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif';
+
   const el = (id) => document.getElementById(id);
 
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g,
@@ -239,7 +241,6 @@ const Cockpit = (() => {
     const totalPendingBalance = filteredLots.reduce((sum, l) => sum + l.saldo, 0);
     const overallProgressPct = totalProgrammed > 0 ? Math.min(100, (totalSentLots / totalProgrammed) * 100) : 0;
 
-    // Cálculo de Paletes / Hora no turno
     let palletsPerHour = 0;
     if (palletsDispatchedToday > 0) {
       const timestamps = validRecords
@@ -275,7 +276,7 @@ const Cockpit = (() => {
   }
 
   // =========================================================================
-  // GERADOR DA IMAGEM OFICIAL BYD (CANVAS 2D)
+  // GERADOR DA IMAGEM OFICIAL BYD (CANVAS 2D SEM SOBREPOSIÇÃO)
   // =========================================================================
   function roundRect(ctx, x, y, w, h, r) {
     const radius = Math.min(r, w / 2, h / 2);
@@ -300,12 +301,31 @@ const Cockpit = (() => {
 
   function buildCockpitCanvas(metrics) {
     const W = 1200;
-    const rows = metrics.filteredLots;
+    const bannerX = 28;
+    const bannerW = W - 56;
+
+    const bannerY = 98;
+    const bannerH = 44;
+
+    const metaY = 160;
+    const metaH = 88;
+
+    const kpiStartY = 272;
+    const kpiH = 132;
+    const kpiGap = 16;
+
+    const sectionTitleY = kpiStartY + kpiH * 2 + kpiGap + 34; // 586
+    const tableY = sectionTitleY + 14; // 600
     const rowHeight = 64;
     const tableHeaderHeight = 48;
-    const minTableRows = Math.max(1, rows.length);
-    const tableHeight = tableHeaderHeight + minTableRows * rowHeight + 12;
-    const H = 740 + tableHeight;
+    const minTableRows = Math.max(1, metrics.filteredLots.length);
+    const tableHeight = tableHeaderHeight + minTableRows * rowHeight + 14;
+
+    const obsY = tableY + tableHeight + 22;
+    const obsH = 212;
+
+    const footerY = obsY + obsH + 28;
+    const H = footerY + 18;
     const dpr = 2;
 
     const canvas = document.createElement('canvas');
@@ -330,26 +350,23 @@ const Cockpit = (() => {
     ctx.strokeStyle = '#FFFFFF';
     ctx.stroke();
     ctx.fillStyle = '#FFFFFF';
-    ctx.font = '800 22px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.font = `800 22px ${FONT_SANS}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('BYD', logoCx, logoCy + 1);
     ctx.restore();
 
     ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = '#FFFFFF';
-    ctx.font = '800 23px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.font = `800 23px ${FONT_SANS}`;
     ctx.fillText('COCKPIT LOGÍSTICO - ENTREGA DE MATERIAIS', W / 2, 43);
 
     ctx.fillStyle = '#94A3B8';
-    ctx.font = '600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    ctx.font = `600 15px ${FONT_SANS}`;
     ctx.fillText('物流驾驶舱 - 物料配送', W / 2, 70);
 
     // 3. Faixa Relatório Diário de Expedição
-    const bannerX = 28;
-    const bannerY = 98;
-    const bannerW = W - 56;
-    const bannerH = 44;
     const bannerGrad = ctx.createLinearGradient(bannerX, bannerY, bannerX + bannerW, bannerY);
     bannerGrad.addColorStop(0, '#78350F');
     bannerGrad.addColorStop(0.5, '#92400E');
@@ -362,7 +379,7 @@ const Cockpit = (() => {
     ctx.stroke();
 
     ctx.fillStyle = '#FEF3C7';
-    ctx.font = '800 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.font = `800 16px ${FONT_SANS}`;
     ctx.textAlign = 'center';
     ctx.fillText('RELATÓRIO DIÁRIO DE EXPEDIÇÃO / 每日发运报告', W / 2, bannerY + 27);
 
@@ -376,8 +393,6 @@ const Cockpit = (() => {
     ];
     const metaGap = 14;
     const metaCardW = (bannerW - metaGap * 4) / 5;
-    const metaY = 160;
-    const metaH = 88;
 
     metaCards.forEach((item, idx) => {
       const x = bannerX + idx * (metaCardW + metaGap);
@@ -387,15 +402,16 @@ const Cockpit = (() => {
 
       ctx.textAlign = 'left';
       ctx.fillStyle = '#64748B';
-      ctx.font = '800 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      ctx.font = `800 11px ${FONT_SANS}`;
       ctx.fillText(item.label, x + 16, metaY + 32);
 
       ctx.fillStyle = '#0F172A';
-      ctx.font = '800 17px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      ctx.font = `800 17px ${FONT_SANS}`;
       ctx.fillText(truncateCanvasText(ctx, item.value, metaCardW - 30), x + 16, metaY + 62);
     });
 
     // 5. 6 Cards de KPIs em 2 Linhas x 3 Colunas
+    const tripLabel = metrics.uniqueTrips === 1 ? '1 viagem' : `${metrics.uniqueTrips} viagens`;
     const kpis = [
       {
         title: 'TOTAL PALETES PROGRAMADOS',
@@ -446,17 +462,14 @@ const Cockpit = (() => {
         title: 'PALETES / HORA',
         zh: '每小时发运',
         value: String(metrics.palletsPerHour),
-        sub: `Paletes / 小时 (${metrics.uniqueTrips} viagens)`,
+        sub: `Paletes / 小时 (${tripLabel})`,
         c1: '#1E3A8A',
         c2: '#0369A1',
         border: '#38BDF8'
       }
     ];
 
-    const kpiGap = 16;
     const kpiW = (bannerW - kpiGap * 2) / 3;
-    const kpiH = 132;
-    const kpiStartY = 272;
 
     kpis.forEach((kpi, idx) => {
       const col = idx % 3;
@@ -475,7 +488,6 @@ const Cockpit = (() => {
       ctx.strokeStyle = kpi.border;
       ctx.stroke();
 
-      // Borda interna sutil igual ao modelo
       roundRect(ctx, x + 7, y + 7, kpiW - 14, kpiH - 14, 10);
       ctx.lineWidth = 1;
       ctx.strokeStyle = 'rgba(255,255,255,0.12)';
@@ -483,30 +495,28 @@ const Cockpit = (() => {
 
       ctx.textAlign = 'left';
       ctx.fillStyle = '#F8FAFC';
-      ctx.font = '800 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      ctx.font = `800 12px ${FONT_SANS}`;
       ctx.fillText(kpi.title, x + 22, y + 30);
 
-      ctx.fillStyle = 'rgba(241, 245, 249, 0.82)';
-      ctx.font = '600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.fillStyle = 'rgba(241, 245, 249, 0.85)';
+      ctx.font = `600 12px ${FONT_SANS}`;
       ctx.fillText(kpi.zh, x + 22, y + 48);
 
       ctx.fillStyle = '#FFFFFF';
-      ctx.font = '800 34px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      ctx.font = `800 34px ${FONT_SANS}`;
       ctx.fillText(kpi.value, x + 22, y + 92);
 
       ctx.fillStyle = 'rgba(241, 245, 249, 0.85)';
-      ctx.font = '600 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      ctx.font = `600 11.5px ${FONT_SANS}`;
       ctx.fillText(kpi.sub, x + 22, y + 114);
     });
 
     // 6. Tabela Acompanhamento dos Lotes
-    const sectionTitleY = kpiStartY + kpiH * 2 + kpiGap + 34;
     ctx.textAlign = 'left';
     ctx.fillStyle = '#F8FAFC';
-    ctx.font = '800 15px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.font = `800 15px ${FONT_SANS}`;
     ctx.fillText('ACOMPANHAMENTO DOS LOTES / 批次跟踪表', bannerX, sectionTitleY);
 
-    const tableY = sectionTitleY + 14;
     roundRect(ctx, bannerX, tableY, bannerW, tableHeight, 14);
     ctx.fillStyle = '#0D1424';
     ctx.fill();
@@ -514,7 +524,6 @@ const Cockpit = (() => {
     ctx.strokeStyle = '#22314F';
     ctx.stroke();
 
-    // Cabeçalho da Tabela
     const cols = [
       { label: 'Nº / 序号', x: bannerX + 20 },
       { label: 'LOTE ID / 批次号', x: bannerX + 120 },
@@ -526,7 +535,7 @@ const Cockpit = (() => {
     ];
 
     ctx.fillStyle = '#94A3B8';
-    ctx.font = '800 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.font = `800 11.5px ${FONT_SANS}`;
     cols.forEach((col) => {
       ctx.fillText(col.label, col.x, tableY + 30);
     });
@@ -537,9 +546,10 @@ const Cockpit = (() => {
     ctx.strokeStyle = '#22314F';
     ctx.stroke();
 
+    const rows = metrics.filteredLots;
     if (!rows.length) {
       ctx.fillStyle = '#94A3B8';
-      ctx.font = '600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      ctx.font = `600 14px ${FONT_SANS}`;
       ctx.textAlign = 'center';
       ctx.fillText('Nenhum lote ativo cadastrado para este turno/filtro.', W / 2, tableY + tableHeaderHeight + 36);
     } else {
@@ -555,26 +565,25 @@ const Cockpit = (() => {
 
         ctx.textAlign = 'left';
         ctx.fillStyle = '#94A3B8';
-        ctx.font = '700 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        ctx.font = `700 13px ${FONT_SANS}`;
         ctx.fillText(String(idx + 1).padStart(2, '0'), cols[0].x, ry + 36);
 
         const lotTitle = `${lot.Nome_Lote || ''}${lot.Turno_Vinculado ? ` · ${lot.Turno_Vinculado}` : ''}`;
         ctx.fillStyle = '#F8FAFC';
-        ctx.font = '800 13.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        ctx.font = `800 13.5px ${FONT_SANS}`;
         ctx.fillText(truncateCanvasText(ctx, lotTitle, 285), cols[1].x, ry + 28);
 
         ctx.fillStyle = '#64748B';
-        ctx.font = '700 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        ctx.font = `700 11.5px ${FONT_SANS}`;
         ctx.fillText(String(lot.Modelo_Base || ''), cols[1].x, ry + 47);
 
         ctx.fillStyle = '#F8FAFC';
-        ctx.font = '700 13.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        ctx.font = `700 13.5px ${FONT_SANS}`;
         ctx.fillText(String(lot.meta), cols[2].x, ry + 36);
         ctx.fillText(String(lot.sent), cols[3].x, ry + 36);
         ctx.fillText(String(lot.saldo), cols[4].x, ry + 36);
         ctx.fillText(formatPct(lot.pct), cols[5].x, ry + 36);
 
-        // Badge Status Operacional
         const badgeX = cols[6].x;
         const badgeY = ry + 18;
         const badgeW = 195;
@@ -586,7 +595,7 @@ const Cockpit = (() => {
           ctx.strokeStyle = '#22C55E';
           ctx.stroke();
           ctx.fillStyle = '#86EFAC';
-          ctx.font = '800 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          ctx.font = `800 11px ${FONT_SANS}`;
           ctx.textAlign = 'center';
           ctx.fillText('CONCLUÍDO / 已完成', badgeX + badgeW / 2, badgeY + 18);
         } else {
@@ -595,23 +604,21 @@ const Cockpit = (() => {
           ctx.strokeStyle = '#D97706';
           ctx.stroke();
           ctx.fillStyle = '#FCD34D';
-          ctx.font = '800 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          ctx.font = `800 11px ${FONT_SANS}`;
           ctx.textAlign = 'center';
           ctx.fillText('EM ANDAMENTO / 进行中', badgeX + badgeW / 2, badgeY + 18);
         }
       });
     }
 
-    // 7. Quadro Branco Observações Operacionais / 运行备注
-    const obsY = tableY + tableHeight + 22;
-    const obsH = 192;
+    // 7. Quadro Branco Observações Operacionais / 运行备注 (PT + Chinês Simplificado)
     roundRect(ctx, bannerX, obsY, bannerW, obsH, 14);
     ctx.fillStyle = '#FFFFFF';
     ctx.fill();
 
     ctx.textAlign = 'left';
     ctx.fillStyle = '#0F172A';
-    ctx.font = '800 13.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.font = `800 13.5px ${FONT_SANS}`;
     ctx.fillText('OBSERVAÇÕES OPERACIONAIS / 运行备注', bannerX + 24, obsY + 30);
 
     const pctStr = formatPct(metrics.overallProgressPct);
@@ -626,29 +633,38 @@ const Cockpit = (() => {
       `待发批次: ${metrics.pendingLots}，总待发余额: ${metrics.totalPendingBalance} 托盘。`
     ];
 
-    ctx.fillStyle = '#334155';
-    ctx.font = '600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.fillStyle = '#1E293B';
+    ctx.font = `600 13px ${FONT_SANS}`;
     ptLines.forEach((line, i) => {
-      ctx.fillText(line, bannerX + 24, obsY + 56 + i * 21);
+      ctx.fillText(line, bannerX + 24, obsY + 58 + i * 21);
     });
 
+    // Linha divisória sutil entre Português e Chinês Simplificado
+    ctx.beginPath();
+    ctx.moveTo(bannerX + 24, obsY + 114);
+    ctx.lineTo(bannerX + bannerW - 140, obsY + 114);
+    ctx.strokeStyle = '#E2E8F0';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.fillStyle = '#0F172A';
+    ctx.font = `600 13.5px ${FONT_SANS}`;
     zhLines.forEach((line, i) => {
-      ctx.fillText(line, bannerX + 24, obsY + 128 + i * 21);
+      ctx.fillText(line, bannerX + 24, obsY + 138 + i * 22);
     });
 
     // Marca d'água BYD no canto inferior direito do quadro branco
     ctx.save();
     ctx.textAlign = 'right';
-    ctx.fillStyle = 'rgba(220, 38, 38, 0.14)';
-    ctx.font = '900 34px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.fillStyle = 'rgba(220, 38, 38, 0.16)';
+    ctx.font = `900 36px ${FONT_SANS}`;
     ctx.fillText('BYD', bannerX + bannerW - 26, obsY + obsH - 22);
     ctx.restore();
 
-    // 8. Rodapé
-    const footerY = H - 16;
+    // 8. Rodapé sem sobreposição (28px abaixo do card branco)
     ctx.textAlign = 'left';
-    ctx.fillStyle = '#64748B';
-    ctx.font = '700 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.fillStyle = '#94A3B8';
+    ctx.font = `700 11.5px ${FONT_SANS}`;
     ctx.fillText('BYD • LOGÍSTICA INDUSTRIAL', bannerX, footerY);
 
     ctx.textAlign = 'right';
@@ -745,7 +761,7 @@ const Cockpit = (() => {
       <article class="kpi-card">
         <div class="kpi-label">Enviado para o Piso</div>
         <div class="kpi-value" style="color:var(--success-text)">${metrics.totalSentLots}</div>
-        <div class="kpi-sub">Hoje no turno: ${metrics.palletsDispatchedToday} paletes (${metrics.uniqueTrips} viagens)</div>
+        <div class="kpi-sub">Hoje no turno: ${metrics.palletsDispatchedToday} paletes (${metrics.uniqueTrips} ${metrics.uniqueTrips === 1 ? 'viagem' : 'viagens'})</div>
       </article>
       <article class="kpi-card">
         <div class="kpi-label">Saldo Pendente Geral</div>
