@@ -1,8 +1,12 @@
-const CACHE_NAME = 'byd-entrega-v7';
+const CACHE_NAME = 'byd-entrega-v8';
 const ASSETS = ['./', './index.html', './db.js', './app.js', './cockpit.js', './manifest.json'];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.allSettled(ASSETS.map((url) => cache.add(url)))
+    )
+  );
   self.skipWaiting();
 });
 
@@ -19,7 +23,6 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
   const requestUrl = new URL(event.request.url);
-  // Nunca interceptar requisições externas (Supabase API, WebSocket, CDN, Google Sheets)
   if (requestUrl.origin !== self.location.origin) return;
 
   event.respondWith(
