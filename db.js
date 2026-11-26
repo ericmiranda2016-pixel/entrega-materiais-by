@@ -2,11 +2,12 @@ const DB = (() => {
   'use strict';
 
   // =========================================================================
-  // 1. CONFIGURAÇÃO DO SUPABASE (TEMPO REAL < 0,3s) + ESPELHO GOOGLE SHEETS
+  // 1. CONFIGURAÇÃO DO SUPABASE (TEMPO REAL)
   // =========================================================================
   const SUPABASE_URL = 'https://nsyrvgmdkdhznexbsqwz.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_5RdyvbPoKKpDgBMJEiNgcQ_bGxQ7yIz';
-  const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbxhdG44T6jX-f7_iH1xH28Q0lT-q0y8P1B-3l2gR9s2wK60/exec';
+  const DEFAULT_API_URL = '';
+  const LEGACY_DEAD_SCRIPT_ID = 'AKfycbxhdG44T6jX-f7_iH1xH28Q0lT-q0y8P1B-3l2gR9s2wK60';
 
   const SUPABASE_SDK_URLS = [
     'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',
@@ -54,7 +55,8 @@ const DB = (() => {
   let realtimeChannel = null;
   let realtimeConnected = false;
   let realtimeDebounceTimer = null;
-  let realtimeReconnectTimer = null;
+  let realtimePollingTimer = null;
+  let lifecycleListenersBound = false;
   let lastRealtimeHandlers = { onSnapshotUpdate: null, onStatusChange: null };
   let syncInFlight = null;
 
@@ -132,15 +134,20 @@ const DB = (() => {
   }
 
   function getApiUrl() {
-    const savedUrl = localStorage.getItem(CONFIG_KEY);
-    if (savedUrl) return savedUrl;
-    localStorage.setItem(CONFIG_KEY, DEFAULT_API_URL);
-    return DEFAULT_API_URL;
+    const savedUrl = String(localStorage.getItem(CONFIG_KEY) || '').trim();
+    if (savedUrl && savedUrl.includes(LEGACY_DEAD_SCRIPT_ID)) {
+      localStorage.removeItem(CONFIG_KEY);
+      return DEFAULT_API_URL;
+    }
+    return savedUrl || DEFAULT_API_URL;
   }
 
   function setApiUrl(url) {
     const value = String(url || '').trim();
-    if (!value) throw new Error('A URL atual foi preservada. Informe uma URL válida para substituí-la.');
+    if (!value) {
+      localStorage.removeItem(CONFIG_KEY);
+      return;
+    }
     localStorage.setItem(CONFIG_KEY, value);
   }
 
@@ -178,7 +185,7 @@ const DB = (() => {
   }
 
   function translateSupabaseError(err) {
-    const msg = String(err && (err.message || err.details || err.hint) || '');
+    const msg = String((err && (err.message || err.details || err.hint)) || '');
     if (/invalid api key|jwt|apikey/i.test(msg)) {
       return apiError('Chave do Supabase inválida. Confira Project Settings > API no painel.', 'CONFIG_REQUIRED');
     }
@@ -443,7 +450,9 @@ const DB = (() => {
           throw apiError('Perfil sem permissão de acesso.', 'FORBIDDEN');
         }
         const selectedTurn = user.Perfil === 'ADMIN_GERAL' ? turno : user.Turno_Vinculado;
-        refreshGasTokenSilently(matricula, pin, selectedTurn);
+        if (getApiUrl()) {
+          refreshGasTokenSilently(matricula, pin, selectedTurn);
+        }
 
         return {
           token: `sb-${matricula}-${Date.now()}`,
@@ -465,7 +474,7 @@ const DB = (() => {
   }
 
   // =========================================================================
-  // 4. ESPELHO AUTOMÁTICO PARA GOOGLE SHEETS (SEGUNDO PLANO)
+  // 4. ESPELHO OPCIONAL PARA GOOGLE SHEETS (SOMENTE SE CONFIGURADO)
   // =========================================================================
   async function mirrorToSheets(payload) {
     const url = getApiUrl();
@@ -537,7 +546,7 @@ const DB = (() => {
   async function executeSupabaseWrite(payload, session) {
     const sb = await ensureSupabase();
     if (!sb) {
-      throw apiError('Não foi possível carregar o cliente Supabase. Verifique sua conexão e recarregue a página.', 'CONFIG_REQUIRED');
+      throw apiError('Não foi possível conectar ao Supabase. Verifique sua internet e recarregue a página.', 'CONFIG_REQUIRED');
     }
 
     const role = String(session.Perfil || '').toUpperCase();
@@ -551,8 +560,8 @@ const DB = (() => {
       return {
         ok: true,
         message: mirrored
-          ? 'Supabase Tempo Real (<0,3s) + Espelho Google Sheets conectados com sucesso!'
-          : 'Supabase conectado em Tempo Real (<0,3s)!'
+          ? 'Supabase + Espelho Google Sheets conectados com sucesso!'
+          : 'Supabase conectado e sincronizado com sucesso!'
       };
     }
 
@@ -694,7 +703,7 @@ const DB = (() => {
 
       return {
         ok: true,
-        mensagem: 'Funcionário salvo e sincronizado em tempo real.',
+        mensagem: 'Funcionário salvo e sincronizado.',
         users: mappedUsers,
         sessionRevoked: targetMatricula === session.Matricula && targetAtivo !== 'SIM'
       };
@@ -762,7 +771,7 @@ const DB = (() => {
       const { data: allResources } = await sb.from('recursos_turno').select('*').order('nome');
       const mapped = Array.isArray(allResources) ? allResources.map(mapResourceRow) : [];
       localStorage.setItem(RESOURCE_CACHE_KEY, JSON.stringify(mapped));
-      return { ok: true, mensagem: 'Cadastro atualizado em tempo real.', resources: mapped };
+      return { ok: true, mensagem: 'Cadastro atualizado e sincronizado.', resources: mapped };
     }
 
     if (payload.action === 'excluir_recurso') {
@@ -846,7 +855,7 @@ const DB = (() => {
   }
 
   // =========================================================================
-  // 6. LEITURA SINCRONIZADA DO SUPABASE + REALTIME WEBSOCKET (< 0,3s)
+  // 6. LEITURA SINCRONIZADA DO SUPABASE + REALTIME / POLLING SILENCIOSO
   // =========================================================================
   function normalizeLotRowLocal(lot) {
     const source = lot || {};
@@ -956,18 +965,63 @@ const DB = (() => {
     return syncInFlight;
   }
 
+  function startFallbackPolling() {
+    if (realtimePollingTimer) return;
+    realtimePollingTimer = setInterval(async () => {
+      if (!getSession() || !navigator.onLine || realtimeConnected || document.hidden) return;
+      try {
+        const snapshot = await sincronizarLeitura();
+        if (typeof lastRealtimeHandlers.onSnapshotUpdate === 'function') {
+          lastRealtimeHandlers.onSnapshotUpdate(snapshot);
+        }
+      } catch (_) {}
+    }, 12000);
+  }
+
+  function stopFallbackPolling() {
+    if (realtimePollingTimer) {
+      clearInterval(realtimePollingTimer);
+      realtimePollingTimer = null;
+    }
+  }
+
+  function bindLifecycleListeners() {
+    if (lifecycleListenersBound) return;
+    lifecycleListenersBound = true;
+
+    const refreshNow = async () => {
+      if (!getSession() || !navigator.onLine || document.hidden) return;
+      try {
+        const snapshot = await sincronizarLeitura();
+        if (typeof lastRealtimeHandlers.onSnapshotUpdate === 'function') {
+          lastRealtimeHandlers.onSnapshotUpdate(snapshot);
+        }
+      } catch (_) {}
+    };
+
+    window.addEventListener('online', refreshNow);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshNow();
+    });
+  }
+
   async function subscribeRealtime(onSnapshotUpdate, onStatusChange) {
-    lastRealtimeHandlers = { onSnapshotUpdate, onStatusChange };
     const sb = await ensureSupabase();
     if (!sb) return;
     stopRealtime();
+
+    lastRealtimeHandlers = { onSnapshotUpdate, onStatusChange };
+    bindLifecycleListeners();
+    startFallbackPolling();
 
     const triggerFastSync = () => {
       clearTimeout(realtimeDebounceTimer);
       realtimeDebounceTimer = setTimeout(async () => {
         try {
           const snapshot = await sincronizarLeitura();
-          if (typeof onSnapshotUpdate === 'function') onSnapshotUpdate(snapshot);
+          if (typeof lastRealtimeHandlers.onSnapshotUpdate === 'function') {
+            lastRealtimeHandlers.onSnapshotUpdate(snapshot);
+          }
         } catch (_) {}
       }, 150);
     };
@@ -981,15 +1035,13 @@ const DB = (() => {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'modelos' }, triggerFastSync)
       .subscribe((status) => {
         realtimeConnected = status === 'SUBSCRIBED';
-        if (typeof onStatusChange === 'function') onStatusChange(status, realtimeConnected);
-
-        if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status) && getSession() && navigator.onLine) {
-          clearTimeout(realtimeReconnectTimer);
-          realtimeReconnectTimer = setTimeout(() => {
-            if (getSession() && !realtimeConnected && lastRealtimeHandlers.onSnapshotUpdate) {
-              subscribeRealtime(lastRealtimeHandlers.onSnapshotUpdate, lastRealtimeHandlers.onStatusChange);
-            }
-          }, 3000);
+        if (realtimeConnected) {
+          stopFallbackPolling();
+        } else {
+          startFallbackPolling();
+        }
+        if (typeof lastRealtimeHandlers.onStatusChange === 'function') {
+          lastRealtimeHandlers.onStatusChange(status, realtimeConnected);
         }
       });
   }
@@ -997,7 +1049,7 @@ const DB = (() => {
   function stopRealtime() {
     realtimeConnected = false;
     clearTimeout(realtimeDebounceTimer);
-    clearTimeout(realtimeReconnectTimer);
+    stopFallbackPolling();
     if (realtimeChannel && supabaseClient) {
       try { supabaseClient.removeChannel(realtimeChannel); } catch (_) {}
     }
