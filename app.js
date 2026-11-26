@@ -1117,7 +1117,9 @@
     renderPendingLots();
     renderTripItems();
     updateSyncStatus();
-    Cockpit.update(records, cockpitContext());
+    if (window.Cockpit && typeof Cockpit.update === 'function') {
+      Cockpit.update(records, cockpitContext());
+    }
   }
 
   async function compressPhoto(file) {
@@ -1409,14 +1411,14 @@
     uiConfig.coordinator = el('settingsCoordinator').value.trim();
     uiConfig.leadership = el('settingsLeadership').value.trim();
     persistUiConfig();
-    if (requestedUrl && requestedUrl !== currentUrl) {
+    if (requestedUrl !== currentUrl) {
       try {
         DB.setApiUrl(requestedUrl);
       } catch (error) {
         showToast(error.message, 5000);
         return;
       }
-      showToast('URL do espelho Google Sheets atualizada.');
+      showToast(requestedUrl ? 'URL do espelho Google Sheets atualizada.' : 'Espelho Google Sheets removido.');
     } else {
       showToast('Governança salva com sucesso.');
     }
@@ -2075,7 +2077,9 @@
     document.querySelectorAll('.screen').forEach((screen) => screen.classList.remove('active'));
     el(views[view]).classList.add('active');
     document.querySelectorAll('.nav-button').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
-    if (view === 'cockpit') Cockpit.update(records, cockpitContext());
+    if (view === 'cockpit' && window.Cockpit && typeof Cockpit.update === 'function') {
+      Cockpit.update(records, cockpitContext());
+    }
     if (view === 'settings') {
       renderAccess();
       renderUsers();

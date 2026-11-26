@@ -2,17 +2,12 @@ const DB = (() => {
   'use strict';
 
   // =========================================================================
-  // 1. CONFIGURAÇÃO DO SUPABASE (TEMPO REAL)
+  // 1. CONFIGURAÇÃO DO SUPABASE (TEMPO REAL + REST DIRETO)
   // =========================================================================
   const SUPABASE_URL = 'https://nsyrvgmdkdhznexbsqwz.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_5RdyvbPoKKpDgBMJEiNgcQ_bGxQ7yIz';
   const DEFAULT_API_URL = '';
   const LEGACY_DEAD_SCRIPT_ID = 'AKfycbxhdG44T6jX-f7_iH1xH28Q0lT-q0y8P1B-3l2gR9s2wK60';
-
-  const SUPABASE_SDK_URLS = [
-    'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',
-    'https://unpkg.com/@supabase/supabase-js@2'
-  ];
 
   const CONFIG_KEY = 'byd_apps_script_url';
   const CACHE_KEY = 'byd_records_cache_v1';
@@ -51,7 +46,6 @@ const DB = (() => {
   ];
 
   let supabaseClient = null;
-  let sdkLoadPromise = null;
   let realtimeChannel = null;
   let realtimeConnected = false;
   let realtimeDebounceTimer = null;
@@ -63,70 +57,61 @@ const DB = (() => {
   function hasValidSupabaseConfig() {
     const url = String(SUPABASE_URL || '').trim();
     const key = String(SUPABASE_ANON_KEY || '').trim();
-    if (!url.startsWith('https://') || !key) return false;
-    if (key.startsWith('postgresql://') || key.includes('COLE_SUA_CHAVE')) return false;
-    return /^(eyJ|sb_publishable_)/.test(key);
-  }
-
-  function loadExternalScript(src) {
-    return new Promise((resolve, reject) => {
-      const existing = document.querySelector(`script[src="${src}"]`);
-      if (existing) {
-        if (window.supabase && typeof window.supabase.createClient === 'function') {
-          resolve();
-          return;
-        }
-        existing.addEventListener('load', () => resolve(), { once: true });
-        existing.addEventListener('error', () => reject(new Error(`Falha ao carregar ${src}`)), { once: true });
-        return;
-      }
-      const script = document.createElement('script');
-      script.src = src;
-      script.async = true;
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error(`Falha ao carregar ${src}`));
-      document.head.appendChild(script);
-    });
-  }
-
-  async function ensureSupabase() {
-    if (supabaseClient) return supabaseClient;
-    if (!hasValidSupabaseConfig()) return null;
-
-    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
-      if (!sdkLoadPromise) {
-        sdkLoadPromise = (async () => {
-          for (const url of SUPABASE_SDK_URLS) {
-            try {
-              await loadExternalScript(url);
-              if (window.supabase && typeof window.supabase.createClient === 'function') return;
-            } catch (_) {}
-          }
-        })().finally(() => {
-          sdkLoadPromise = null;
-        });
-      }
-      await sdkLoadPromise;
-    }
-
-    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
-      return null;
-    }
-
-    supabaseClient = window.supabase.createClient(SUPABASE_URL.trim(), SUPABASE_ANON_KEY.trim(), {
-      realtime: { params: { eventsPerSecond: 20 } }
-    });
-    return supabaseClient;
+    return url.startsWith('https://') && /^(eyJ|sb_publishable_)/.test(key);
   }
 
   function getSupabase() {
     if (supabaseClient) return supabaseClient;
-    if (!window.supabase || typeof window.supabase.createClient !== 'function') return null;
     if (!hasValidSupabaseConfig()) return null;
-    supabaseClient = window.supabase.createClient(SUPABASE_URL.trim(), SUPABASE_ANON_KEY.trim(), {
-      realtime: { params: { eventsPerSecond: 20 } }
-    });
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') return null;
+    try {
+      supabaseClient = window.supabase.createClient(SUPABASE_URL.trim(), SUPABASE_ANON_KEY.trim(), {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false
+        },
+        realtime: { params: { eventsPerSecond: 20 } }
+      });
+    } catch (_) {
+      supabaseClient = null;
+    }
     return supabaseClient;
+  }
+
+  function withTimeout(promise, ms = 7000) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_SUPABASE')), ms))
+    ]);
+  }
+
+  async function restRequest(path, options = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeout || 8000);
+    try {
+      const headers = {
+        apikey: SUPABASE_ANON_KEY.trim(),
+        'Content-Type': 'application/json',
+        ...(options.headers || {})
+      };
+      const response = await fetch(`${SUPABASE_URL.trim()}/rest/v1/${path}`, {
+        method: options.method || 'GET',
+        headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: controller.signal
+      });
+      const text = await response.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (_) { data = text; }
+      if (!response.ok) {
+        const msg = (data && (data.message || data.details || data.hint)) || `HTTP ${response.status}`;
+        throw new Error(msg);
+      }
+      return data;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function isRealtimeConnected() {
@@ -187,7 +172,7 @@ const DB = (() => {
   function translateSupabaseError(err) {
     const msg = String((err && (err.message || err.details || err.hint)) || '');
     if (/invalid api key|jwt|apikey/i.test(msg)) {
-      return apiError('Chave do Supabase inválida. Confira Project Settings > API no painel.', 'CONFIG_REQUIRED');
+      return apiError('Chave do Supabase inválida. Confira Project Settings > API Keys no painel.', 'CONFIG_REQUIRED');
     }
     if (/duplicate key|unique constraint/i.test(msg)) {
       return apiError('Registro duplicado no banco de dados.', 'DUPLICATE_MATRICULA');
@@ -195,7 +180,7 @@ const DB = (() => {
     if (/violates check constraint|violates foreign key|invalid input syntax/i.test(msg)) {
       return apiError(`Dados rejeitados pelo banco: ${msg}`, 'INVALID_INPUT');
     }
-    if (/load failed|failed to fetch|networkerror|fetch/i.test(msg)) {
+    if (/load failed|failed to fetch|networkerror|fetch|abort|timeout/i.test(msg)) {
       return apiError('Falha de rede ao conectar com o Supabase.', 'NETWORK_ERROR');
     }
     return apiError(msg || 'Erro no banco de dados Supabase.', 'SERVER_ERROR');
@@ -414,6 +399,22 @@ const DB = (() => {
     };
   }
 
+  async function fetchUserRowRemote(matricula) {
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const { data, error } = await withTimeout(
+          sb.from('usuarios').select('*').eq('matricula', matricula).maybeSingle(),
+          6000
+        );
+        if (error) throw error;
+        return data;
+      } catch (_) {}
+    }
+    const rows = await restRequest(`usuarios?select=*&matricula=eq.${encodeURIComponent(matricula)}&limit=1`);
+    return Array.isArray(rows) && rows.length ? rows[0] : null;
+  }
+
   async function authenticate(credentials) {
     const matricula = String(credentials.Matricula || '').trim();
     const pin = String(credentials.PIN === null || credentials.PIN === undefined ? '' : credentials.PIN).trim();
@@ -423,54 +424,40 @@ const DB = (() => {
       return authenticateLocal(matricula, pin, turno);
     }
 
-    const sb = await ensureSupabase();
-    if (sb) {
-      try {
-        const { data, error } = await sb
-          .from('usuarios')
-          .select('*')
-          .eq('matricula', matricula)
-          .maybeSingle();
+    try {
+      const data = await fetchUserRowRemote(matricula);
+      if (!data) throw apiError('Matrícula, PIN ou status inválido.', 'INVALID_CREDENTIALS');
 
-        if (error) {
-          const translated = translateSupabaseError(error);
-          if (translated.code === 'NETWORK_ERROR') {
-            return authenticateLocal(matricula, pin, turno);
-          }
-          throw translated;
-        }
+      const user = mapUserRow(data);
+      if (user.PIN !== pin || user.Ativo !== 'SIM') {
+        throw apiError('Matrícula, PIN ou status inválido.', 'INVALID_CREDENTIALS');
+      }
+      if (!['ADMIN_GERAL', 'LIDER_TURNO', 'OPERADOR'].includes(user.Perfil)) {
+        throw apiError('Perfil sem permissão de acesso.', 'FORBIDDEN');
+      }
+      const selectedTurn = user.Perfil === 'ADMIN_GERAL' ? turno : user.Turno_Vinculado;
+      if (getApiUrl()) {
+        refreshGasTokenSilently(matricula, pin, selectedTurn);
+      }
 
-        if (!data) throw apiError('Matrícula, PIN ou status inválido.', 'INVALID_CREDENTIALS');
-
-        const user = mapUserRow(data);
-        if (user.PIN !== pin || user.Ativo !== 'SIM') {
-          throw apiError('Matrícula, PIN ou status inválido.', 'INVALID_CREDENTIALS');
-        }
-        if (!['ADMIN_GERAL', 'LIDER_TURNO', 'OPERADOR'].includes(user.Perfil)) {
-          throw apiError('Perfil sem permissão de acesso.', 'FORBIDDEN');
-        }
-        const selectedTurn = user.Perfil === 'ADMIN_GERAL' ? turno : user.Turno_Vinculado;
-        if (getApiUrl()) {
-          refreshGasTokenSilently(matricula, pin, selectedTurn);
-        }
-
-        return {
-          token: `sb-${matricula}-${Date.now()}`,
-          expiresIn: 12 * 3600,
-          Matricula: user.Matricula,
-          Nome: user.Nome,
-          Perfil: user.Perfil,
-          Turno: selectedTurn,
-          Turno_Vinculado: user.Turno_Vinculado,
-          user
-        };
-      } catch (err) {
-        if (isAuthorizationError(err)) throw err;
+      return {
+        token: `sb-${matricula}-${Date.now()}`,
+        expiresIn: 12 * 3600,
+        Matricula: user.Matricula,
+        Nome: user.Nome,
+        Perfil: user.Perfil,
+        Turno: selectedTurn,
+        Turno_Vinculado: user.Turno_Vinculado,
+        user
+      };
+    } catch (err) {
+      if (isAuthorizationError(err)) throw err;
+      const translated = translateSupabaseError(err);
+      if (translated.code === 'NETWORK_ERROR') {
         return authenticateLocal(matricula, pin, turno);
       }
+      throw translated;
     }
-
-    return authenticateLocal(matricula, pin, turno);
   }
 
   // =========================================================================
@@ -509,22 +496,31 @@ const DB = (() => {
   }
 
   async function markSheetsSyncedInSupabase(payload) {
-    const sb = getSupabase();
-    if (!sb) return;
     try {
       if (['criar_viagem', 'criar_apontamento'].includes(payload.action) && Array.isArray(payload.itens)) {
         const ids = payload.itens.map((i) => i.ID_Apontamento).filter(Boolean);
-        if (ids.length) await sb.from('apontamentos').update({ sheets_synced: true }).in('id_apontamento', ids);
+        if (ids.length) {
+          await restRequest(`apontamentos?id_apontamento=in.(${ids.map(encodeURIComponent).join(',')})`, {
+            method: 'PATCH',
+            body: { sheets_synced: true }
+          });
+        }
       } else if (['editar_apontamento', 'reverse', 'estornar_apontamento'].includes(payload.action) && payload.ID_Apontamento) {
-        await sb.from('apontamentos').update({ sheets_synced: true }).eq('id_apontamento', payload.ID_Apontamento);
+        await restRequest(`apontamentos?id_apontamento=eq.${encodeURIComponent(payload.ID_Apontamento)}`, {
+          method: 'PATCH',
+          body: { sheets_synced: true }
+        });
       } else if (['salvar_lote', 'criar_lote'].includes(payload.action) && payload.ID_Lote) {
-        await sb.from('lotes').update({ sheets_synced: true }).eq('id_lote', payload.ID_Lote);
+        await restRequest(`lotes?id_lote=eq.${encodeURIComponent(payload.ID_Lote)}`, {
+          method: 'PATCH',
+          body: { sheets_synced: true }
+        });
       }
     } catch (_) {}
   }
 
   // =========================================================================
-  // 5. OPERAÇÕES DE ESCRITA NO SUPABASE + FILA OFFLINE APENAS SEM INTERNET
+  // 5. OPERAÇÕES DE ESCRITA NO SUPABASE (REST DIRETO) + FILA OFFLINE
   // =========================================================================
   function assertPermission(session, checkFn, message = 'Seu perfil não tem permissão para esta ação.') {
     if (!session) throw apiError('Faça login para continuar.', 'AUTH_REQUIRED');
@@ -544,253 +540,271 @@ const DB = (() => {
   }
 
   async function executeSupabaseWrite(payload, session) {
-    const sb = await ensureSupabase();
-    if (!sb) {
-      throw apiError('Não foi possível conectar ao Supabase. Verifique sua internet e recarregue a página.', 'CONFIG_REQUIRED');
+    if (!hasValidSupabaseConfig()) {
+      throw apiError('Configuração do Supabase ausente.', 'CONFIG_REQUIRED');
     }
 
     const role = String(session.Perfil || '').toUpperCase();
     const isAdmin = role === 'ADMIN_GERAL';
     const isLeader = role === 'LIDER_TURNO';
 
-    if (payload.action === 'test_connection') {
-      const { error } = await sb.from('usuarios').select('matricula').limit(1);
-      if (error) throw translateSupabaseError(error);
-      const mirrored = await mirrorToSheets({ action: 'test_connection' });
-      return {
-        ok: true,
-        message: mirrored
-          ? 'Supabase + Espelho Google Sheets conectados com sucesso!'
-          : 'Supabase conectado e sincronizado com sucesso!'
-      };
-    }
-
-    if (['criar_viagem', 'criar_apontamento'].includes(payload.action)) {
-      const sourceItems = Array.isArray(payload.itens) ? payload.itens : [payload];
-      const rows = sourceItems.map((item) => ({
-        id_apontamento: String(item.ID_Apontamento),
-        id_viagem: String(item.ID_Viagem || payload.ID_Viagem || ''),
-        data_hora: item.DataHora || new Date().toISOString(),
-        data_ref: String(item.Data_Ref),
-        hora_ref: String(item.Hora_Ref),
-        operador: String(item.Operador || session.Nome),
-        matricula_operador: String(session.Matricula || ''),
-        turno: normalizeShiftForSql(item.Turno),
-        nome_lote: String(item.Nome_Lote),
-        modelo_base: String(item.Modelo_Base),
-        componente: String(item.Componente),
-        qtd_enviada: Number(item.Qtd_Enviada),
-        motorista: String(item.Motorista).trim().toUpperCase(),
-        frota: String(item.Frota).trim().toUpperCase(),
-        status: 'ENTREGUE',
-        motivo_estorno: '',
-        observacao_auditoria: ''
-      }));
-      const { error } = await sb.from('apontamentos').upsert(rows, { onConflict: 'id_apontamento' });
-      if (error) throw translateSupabaseError(error);
-      mirrorToSheets(payload);
-      return { ok: true };
-    }
-
-    if (payload.action === 'editar_apontamento') {
-      const { error } = await sb.from('apontamentos').update({
-        nome_lote: String(payload.Nome_Lote),
-        modelo_base: String(payload.Modelo_Base),
-        componente: String(payload.Componente),
-        qtd_enviada: Number(payload.Qtd_Enviada),
-        motorista: String(payload.Motorista).trim().toUpperCase(),
-        frota: String(payload.Frota).trim().toUpperCase(),
-        observacao_auditoria: `Editado por ${session.Nome} (${session.Matricula}) em ${new Date().toLocaleString('pt-BR')}`
-      }).eq('id_apontamento', String(payload.ID_Apontamento));
-      if (error) throw translateSupabaseError(error);
-      mirrorToSheets(payload);
-      return { ok: true };
-    }
-
-    if (['reverse', 'estornar_apontamento'].includes(payload.action)) {
-      const { error } = await sb.from('apontamentos').update({
-        status: 'ESTORNADO',
-        motivo_estorno: String(payload.Motivo_Estorno),
-        observacao_auditoria: `Estornado por ${session.Nome} (${session.Matricula}) em ${new Date().toLocaleString('pt-BR')}`
-      }).eq('id_apontamento', String(payload.ID_Apontamento));
-      if (error) throw translateSupabaseError(error);
-      mirrorToSheets(payload);
-      return { ok: true };
-    }
-
-    if (['salvar_lote', 'criar_lote'].includes(payload.action)) {
-      const row = {
-        id_lote: String(payload.ID_Lote),
-        nome_lote: String(payload.Nome_Lote).trim(),
-        modelo_base: String(payload.Modelo_Base).trim(),
-        turno_vinculado: normalizeShiftForSql(payload.Turno_Vinculado),
-        ativo: 'SIM',
-        data_criacao: payload.Data_Criacao || new Date().toISOString()
-      };
-      const { error } = await sb.from('lotes').upsert(row, { onConflict: 'id_lote' });
-      if (error) throw translateSupabaseError(error);
-      mirrorToSheets(payload);
-      return { ok: true };
-    }
-
-    if (['excluir_lote', 'deletar_lote'].includes(payload.action)) {
-      let query = sb.from('lotes').delete();
-      if (payload.ID_Lote) query = query.eq('id_lote', String(payload.ID_Lote));
-      else query = query.eq('nome_lote', String(payload.Nome_Lote)).eq('modelo_base', String(payload.Modelo_Base));
-      const { error } = await query;
-      if (error) throw translateSupabaseError(error);
-      mirrorToSheets(payload);
-      return { ok: true };
-    }
-
-    if (payload.action === 'salvar_modelo') {
-      assertPermission(session, () => isAdmin, 'Somente ADMIN_GERAL pode alterar modelos e metas.');
-      const c = payload.Componentes || [];
-      const row = {
-        modelo_base: String(payload.Modelo_Base).trim(),
-        componente1: c[0]?.Nome || '',
-        meta1: Number(c[0]?.Meta) || 0,
-        componente2: c[1]?.Nome || '',
-        meta2: Number(c[1]?.Meta) || 0,
-        componente3: c[2]?.Nome || '',
-        meta3: Number(c[2]?.Meta) || 0,
-        componente4: c[3]?.Nome || '',
-        meta4: Number(c[3]?.Meta) || 0,
-        total_meta: Number(payload.Total_Meta) || 0,
-        updated_at: new Date().toISOString()
-      };
-      const { error } = await sb.from('modelos').upsert(row, { onConflict: 'modelo_base' });
-      if (error) throw translateSupabaseError(error);
-      mirrorToSheets(payload);
-      return { ok: true };
-    }
-
-    if (payload.action === 'salvar_usuario') {
-      assertPermission(session, () => isAdmin || isLeader);
-      const original = String(payload.Matricula_Original || '').trim();
-      const targetMatricula = String(payload.Matricula || '').trim();
-      const targetPerfil = String(payload.Perfil || 'OPERADOR').toUpperCase();
-      const targetTurno = targetPerfil === 'ADMIN_GERAL' ? 'TODOS' : normalizeShiftForSql(payload.Turno_Vinculado);
-      const targetAtivo = String(payload.Ativo || 'SIM').toUpperCase();
-
-      if (isLeader) {
-        if (targetPerfil !== 'OPERADOR' || turnKey(targetTurno) !== turnKey(session.Turno_Vinculado)) {
-          throw apiError('Líder de turno só pode cadastrar ou editar OPERADOR do seu próprio turno.', 'FORBIDDEN');
-        }
+    try {
+      if (payload.action === 'test_connection') {
+        await restRequest('usuarios?select=matricula&limit=1');
+        const mirrored = await mirrorToSheets({ action: 'test_connection' });
+        return {
+          ok: true,
+          message: mirrored
+            ? 'Supabase + Espelho Google Sheets conectados com sucesso!'
+            : 'Supabase conectado e sincronizado com sucesso!'
+        };
       }
 
-      if (original && original !== targetMatricula) {
-        const { data: conflict } = await sb.from('usuarios').select('matricula').eq('matricula', targetMatricula).maybeSingle();
-        if (conflict) throw apiError('Matrícula já cadastrada para outro funcionário.', 'DUPLICATE_MATRICULA');
-        await sb.from('usuarios').delete().eq('matricula', original);
+      if (['criar_viagem', 'criar_apontamento'].includes(payload.action)) {
+        const sourceItems = Array.isArray(payload.itens) ? payload.itens : [payload];
+        const rows = sourceItems.map((item) => ({
+          id_apontamento: String(item.ID_Apontamento),
+          id_viagem: String(item.ID_Viagem || payload.ID_Viagem || ''),
+          data_hora: item.DataHora || new Date().toISOString(),
+          data_ref: String(item.Data_Ref),
+          hora_ref: String(item.Hora_Ref),
+          operador: String(item.Operador || session.Nome),
+          matricula_operador: String(session.Matricula || ''),
+          turno: normalizeShiftForSql(item.Turno),
+          nome_lote: String(item.Nome_Lote),
+          modelo_base: String(item.Modelo_Base),
+          componente: String(item.Componente),
+          qtd_enviada: Number(item.Qtd_Enviada),
+          motorista: String(item.Motorista).trim().toUpperCase(),
+          frota: String(item.Frota).trim().toUpperCase(),
+          status: 'ENTREGUE',
+          motivo_estorno: '',
+          observacao_auditoria: ''
+        }));
+        await restRequest('apontamentos?on_conflict=id_apontamento', {
+          method: 'POST',
+          headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+          body: rows
+        });
+        mirrorToSheets(payload);
+        return { ok: true };
       }
 
-      const row = {
-        matricula: targetMatricula,
-        nome: String(payload.Nome || '').trim(),
-        pin: String(payload.PIN || '').trim(),
-        perfil: targetPerfil,
-        turno_vinculado: targetTurno,
-        ativo: targetAtivo
-      };
-      const { error } = await sb.from('usuarios').upsert(row, { onConflict: 'matricula' });
-      if (error) throw translateSupabaseError(error);
-
-      mirrorToSheets(payload);
-      const { data: allUsers } = await sb.from('usuarios').select('*').order('nome');
-      const mappedUsers = Array.isArray(allUsers) ? allUsers.map(mapUserRow) : [];
-      localStorage.setItem(USER_CACHE_KEY, JSON.stringify(mappedUsers));
-
-      return {
-        ok: true,
-        mensagem: 'Funcionário salvo e sincronizado.',
-        users: mappedUsers,
-        sessionRevoked: targetMatricula === session.Matricula && targetAtivo !== 'SIM'
-      };
-    }
-
-    if (['excluir_usuario', 'deletar_usuario'].includes(payload.action)) {
-      assertPermission(session, () => isAdmin, 'Somente ADMIN_GERAL pode remover usuários.');
-      const targetMatricula = String(payload.Matricula || '').trim();
-      if (!targetMatricula || targetMatricula === session.Matricula) {
-        throw apiError('Não é permitido excluir o usuário atualmente logado.', 'FORBIDDEN');
-      }
-      const { error } = await sb.from('usuarios').delete().eq('matricula', targetMatricula);
-      if (error) throw translateSupabaseError(error);
-      const { data: allUsers } = await sb.from('usuarios').select('*').order('nome');
-      const mappedUsers = Array.isArray(allUsers) ? allUsers.map(mapUserRow) : [];
-      localStorage.setItem(USER_CACHE_KEY, JSON.stringify(mappedUsers));
-      return { ok: true, users: mappedUsers };
-    }
-
-    if (payload.action === 'salvar_recurso') {
-      assertPermission(session, () => isAdmin || isLeader);
-      const tipo = String(payload.Tipo || 'MOTORISTA').toUpperCase();
-      const nome = String(payload.Nome || '').trim().toUpperCase();
-      const ativo = String(payload.Ativo || 'SIM').toUpperCase();
-      const rawTurno = isLeader ? session.Turno_Vinculado : String(payload.Turno_Vinculado || 'Turno B');
-      const turno = turnKey(rawTurno) === 'TODOS' ? 'TODOS' : normalizeShiftForSql(rawTurno);
-
-      if (!nome || !['MOTORISTA', 'FROTA'].includes(tipo)) {
-        throw apiError('Informe um tipo e nome válidos.', 'INVALID_INPUT');
+      if (payload.action === 'editar_apontamento') {
+        await restRequest(`apontamentos?id_apontamento=eq.${encodeURIComponent(String(payload.ID_Apontamento))}`, {
+          method: 'PATCH',
+          headers: { Prefer: 'return=minimal' },
+          body: {
+            nome_lote: String(payload.Nome_Lote),
+            modelo_base: String(payload.Modelo_Base),
+            componente: String(payload.Componente),
+            qtd_enviada: Number(payload.Qtd_Enviada),
+            motorista: String(payload.Motorista).trim().toUpperCase(),
+            frota: String(payload.Frota).trim().toUpperCase(),
+            observacao_auditoria: `Editado por ${session.Nome} (${session.Matricula}) em ${new Date().toLocaleString('pt-BR')}`
+          }
+        });
+        mirrorToSheets(payload);
+        return { ok: true };
       }
 
-      if (payload.ID_Recurso && !String(payload.ID_Recurso).startsWith('seed-')) {
+      if (['reverse', 'estornar_apontamento'].includes(payload.action)) {
+        await restRequest(`apontamentos?id_apontamento=eq.${encodeURIComponent(String(payload.ID_Apontamento))}`, {
+          method: 'PATCH',
+          headers: { Prefer: 'return=minimal' },
+          body: {
+            status: 'ESTORNADO',
+            motivo_estorno: String(payload.Motivo_Estorno),
+            observacao_auditoria: `Estornado por ${session.Nome} (${session.Matricula}) em ${new Date().toLocaleString('pt-BR')}`
+          }
+        });
+        mirrorToSheets(payload);
+        return { ok: true };
+      }
+
+      if (['salvar_lote', 'criar_lote'].includes(payload.action)) {
+        const row = {
+          id_lote: String(payload.ID_Lote),
+          nome_lote: String(payload.Nome_Lote).trim(),
+          modelo_base: String(payload.Modelo_Base).trim(),
+          turno_vinculado: normalizeShiftForSql(payload.Turno_Vinculado),
+          ativo: 'SIM',
+          data_criacao: payload.Data_Criacao || new Date().toISOString()
+        };
+        await restRequest('lotes?on_conflict=id_lote', {
+          method: 'POST',
+          headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+          body: row
+        });
+        mirrorToSheets(payload);
+        return { ok: true };
+      }
+
+      if (['excluir_lote', 'deletar_lote'].includes(payload.action)) {
+        const query = payload.ID_Lote
+          ? `lotes?id_lote=eq.${encodeURIComponent(String(payload.ID_Lote))}`
+          : `lotes?nome_lote=eq.${encodeURIComponent(String(payload.Nome_Lote))}&modelo_base=eq.${encodeURIComponent(String(payload.Modelo_Base))}`;
+        await restRequest(query, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
+        mirrorToSheets(payload);
+        return { ok: true };
+      }
+
+      if (payload.action === 'salvar_modelo') {
+        assertPermission(session, () => isAdmin, 'Somente ADMIN_GERAL pode alterar modelos e metas.');
+        const c = payload.Componentes || [];
+        const row = {
+          modelo_base: String(payload.Modelo_Base).trim(),
+          componente1: c[0]?.Nome || '',
+          meta1: Number(c[0]?.Meta) || 0,
+          componente2: c[1]?.Nome || '',
+          meta2: Number(c[1]?.Meta) || 0,
+          componente3: c[2]?.Nome || '',
+          meta3: Number(c[2]?.Meta) || 0,
+          componente4: c[3]?.Nome || '',
+          meta4: Number(c[3]?.Meta) || 0,
+          total_meta: Number(payload.Total_Meta) || 0,
+          updated_at: new Date().toISOString()
+        };
+        await restRequest('modelos?on_conflict=modelo_base', {
+          method: 'POST',
+          headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+          body: row
+        });
+        mirrorToSheets(payload);
+        return { ok: true };
+      }
+
+      if (payload.action === 'salvar_usuario') {
+        assertPermission(session, () => isAdmin || isLeader);
+        const original = String(payload.Matricula_Original || '').trim();
+        const targetMatricula = String(payload.Matricula || '').trim();
+        const targetPerfil = String(payload.Perfil || 'OPERADOR').toUpperCase();
+        const targetTurno = targetPerfil === 'ADMIN_GERAL' ? 'TODOS' : normalizeShiftForSql(payload.Turno_Vinculado);
+        const targetAtivo = String(payload.Ativo || 'SIM').toUpperCase();
+
         if (isLeader) {
-          const { data: existing } = await sb.from('recursos_turno').select('turno_vinculado').eq('id', payload.ID_Recurso).maybeSingle();
-          if (existing && turnKey(existing.turno_vinculado) !== turnKey(session.Turno_Vinculado)) {
-            throw apiError('Você só pode editar motoristas e frotas do seu próprio turno.', 'FORBIDDEN');
+          if (targetPerfil !== 'OPERADOR' || turnKey(targetTurno) !== turnKey(session.Turno_Vinculado)) {
+            throw apiError('Líder de turno só pode cadastrar ou editar OPERADOR do seu próprio turno.', 'FORBIDDEN');
           }
         }
-        const { error } = await sb.from('recursos_turno').update({
-          tipo,
-          nome,
-          turno_vinculado: turno,
-          ativo
-        }).eq('id', payload.ID_Recurso);
-        if (error) throw translateSupabaseError(error);
-      } else {
-        const { data: dup } = await sb
-          .from('recursos_turno')
-          .select('id')
-          .eq('tipo', tipo)
-          .ilike('nome', nome)
-          .eq('turno_vinculado', turno)
-          .maybeSingle();
-        if (dup) {
-          const { error: updErr } = await sb.from('recursos_turno').update({ ativo, nome }).eq('id', dup.id);
-          if (updErr) throw translateSupabaseError(updErr);
-        } else {
-          const { error: insErr } = await sb.from('recursos_turno').insert({
-            tipo, nome, turno_vinculado: turno, ativo, criado_por: String(session.Matricula || '')
+
+        if (original && original !== targetMatricula) {
+          const conflicts = await restRequest(`usuarios?select=matricula&matricula=eq.${encodeURIComponent(targetMatricula)}&limit=1`);
+          if (Array.isArray(conflicts) && conflicts.length) {
+            throw apiError('Matrícula já cadastrada para outro funcionário.', 'DUPLICATE_MATRICULA');
+          }
+          await restRequest(`usuarios?matricula=eq.${encodeURIComponent(original)}`, { method: 'DELETE' });
+        }
+
+        const row = {
+          matricula: targetMatricula,
+          nome: String(payload.Nome || '').trim(),
+          pin: String(payload.PIN || '').trim(),
+          perfil: targetPerfil,
+          turno_vinculado: targetTurno,
+          ativo: targetAtivo
+        };
+        await restRequest('usuarios?on_conflict=matricula', {
+          method: 'POST',
+          headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+          body: row
+        });
+
+        mirrorToSheets(payload);
+        const allUsers = await restRequest('usuarios?select=*&order=nome.asc');
+        const mappedUsers = Array.isArray(allUsers) ? allUsers.map(mapUserRow) : [];
+        localStorage.setItem(USER_CACHE_KEY, JSON.stringify(mappedUsers));
+
+        return {
+          ok: true,
+          mensagem: 'Funcionário salvo e sincronizado.',
+          users: mappedUsers,
+          sessionRevoked: targetMatricula === session.Matricula && targetAtivo !== 'SIM'
+        };
+      }
+
+      if (['excluir_usuario', 'deletar_usuario'].includes(payload.action)) {
+        assertPermission(session, () => isAdmin, 'Somente ADMIN_GERAL pode remover usuários.');
+        const targetMatricula = String(payload.Matricula || '').trim();
+        if (!targetMatricula || targetMatricula === session.Matricula) {
+          throw apiError('Não é permitido excluir o usuário atualmente logado.', 'FORBIDDEN');
+        }
+        await restRequest(`usuarios?matricula=eq.${encodeURIComponent(targetMatricula)}`, { method: 'DELETE' });
+        const allUsers = await restRequest('usuarios?select=*&order=nome.asc');
+        const mappedUsers = Array.isArray(allUsers) ? allUsers.map(mapUserRow) : [];
+        localStorage.setItem(USER_CACHE_KEY, JSON.stringify(mappedUsers));
+        return { ok: true, users: mappedUsers };
+      }
+
+      if (payload.action === 'salvar_recurso') {
+        assertPermission(session, () => isAdmin || isLeader);
+        const tipo = String(payload.Tipo || 'MOTORISTA').toUpperCase();
+        const nome = String(payload.Nome || '').trim().toUpperCase();
+        const ativo = String(payload.Ativo || 'SIM').toUpperCase();
+        const rawTurno = isLeader ? session.Turno_Vinculado : String(payload.Turno_Vinculado || 'Turno B');
+        const turno = turnKey(rawTurno) === 'TODOS' ? 'TODOS' : normalizeShiftForSql(rawTurno);
+
+        if (!nome || !['MOTORISTA', 'FROTA'].includes(tipo)) {
+          throw apiError('Informe um tipo e nome válidos.', 'INVALID_INPUT');
+        }
+
+        if (payload.ID_Recurso && !String(payload.ID_Recurso).startsWith('seed-')) {
+          if (isLeader) {
+            const existing = await restRequest(`recursos_turno?select=turno_vinculado&id=eq.${encodeURIComponent(payload.ID_Recurso)}&limit=1`);
+            if (Array.isArray(existing) && existing[0] && turnKey(existing[0].turno_vinculado) !== turnKey(session.Turno_Vinculado)) {
+              throw apiError('Você só pode editar motoristas e frotas do seu próprio turno.', 'FORBIDDEN');
+            }
+          }
+          await restRequest(`recursos_turno?id=eq.${encodeURIComponent(payload.ID_Recurso)}`, {
+            method: 'PATCH',
+            headers: { Prefer: 'return=minimal' },
+            body: { tipo, nome, turno_vinculado: turno, ativo }
           });
-          if (insErr) throw translateSupabaseError(insErr);
+        } else {
+          const dup = await restRequest(
+            `recursos_turno?select=id&tipo=eq.${encodeURIComponent(tipo)}&nome=ilike.${encodeURIComponent(nome)}&turno_vinculado=eq.${encodeURIComponent(turno)}&limit=1`
+          );
+          if (Array.isArray(dup) && dup.length) {
+            await restRequest(`recursos_turno?id=eq.${encodeURIComponent(dup[0].id)}`, {
+              method: 'PATCH',
+              headers: { Prefer: 'return=minimal' },
+              body: { ativo, nome }
+            });
+          } else {
+            await restRequest('recursos_turno', {
+              method: 'POST',
+              headers: { Prefer: 'return=minimal' },
+              body: { tipo, nome, turno_vinculado: turno, ativo, criado_por: String(session.Matricula || '') }
+            });
+          }
         }
+
+        const allResources = await restRequest('recursos_turno?select=*&order=nome.asc');
+        const mapped = Array.isArray(allResources) ? allResources.map(mapResourceRow) : [];
+        localStorage.setItem(RESOURCE_CACHE_KEY, JSON.stringify(mapped));
+        return { ok: true, mensagem: 'Cadastro atualizado e sincronizado.', resources: mapped };
       }
 
-      const { data: allResources } = await sb.from('recursos_turno').select('*').order('nome');
-      const mapped = Array.isArray(allResources) ? allResources.map(mapResourceRow) : [];
-      localStorage.setItem(RESOURCE_CACHE_KEY, JSON.stringify(mapped));
-      return { ok: true, mensagem: 'Cadastro atualizado e sincronizado.', resources: mapped };
-    }
-
-    if (payload.action === 'excluir_recurso') {
-      assertPermission(session, () => isAdmin || isLeader);
-      if (isLeader) {
-        const { data: existing } = await sb.from('recursos_turno').select('turno_vinculado').eq('id', payload.ID_Recurso).maybeSingle();
-        if (existing && turnKey(existing.turno_vinculado) !== turnKey(session.Turno_Vinculado)) {
-          throw apiError('Você só pode remover cadastros do seu próprio turno.', 'FORBIDDEN');
+      if (payload.action === 'excluir_recurso') {
+        assertPermission(session, () => isAdmin || isLeader);
+        if (isLeader) {
+          const existing = await restRequest(`recursos_turno?select=turno_vinculado&id=eq.${encodeURIComponent(payload.ID_Recurso)}&limit=1`);
+          if (Array.isArray(existing) && existing[0] && turnKey(existing[0].turno_vinculado) !== turnKey(session.Turno_Vinculado)) {
+            throw apiError('Você só pode remover cadastros do seu próprio turno.', 'FORBIDDEN');
+          }
         }
+        await restRequest(`recursos_turno?id=eq.${encodeURIComponent(String(payload.ID_Recurso))}`, { method: 'DELETE' });
+        const allResources = await restRequest('recursos_turno?select=*&order=nome.asc');
+        const mapped = Array.isArray(allResources) ? allResources.map(mapResourceRow) : [];
+        localStorage.setItem(RESOURCE_CACHE_KEY, JSON.stringify(mapped));
+        return { ok: true, resources: mapped };
       }
-      const { error } = await sb.from('recursos_turno').delete().eq('id', String(payload.ID_Recurso));
-      if (error) throw translateSupabaseError(error);
-      const { data: allResources } = await sb.from('recursos_turno').select('*').order('nome');
-      const mapped = Array.isArray(allResources) ? allResources.map(mapResourceRow) : [];
-      localStorage.setItem(RESOURCE_CACHE_KEY, JSON.stringify(mapped));
-      return { ok: true, resources: mapped };
-    }
 
-    throw apiError(`Ação desconhecida: ${payload.action}`, 'INVALID_ACTION');
+      throw apiError(`Ação desconhecida: ${payload.action}`, 'INVALID_ACTION');
+    } catch (error) {
+      if (isAuthorizationError(error)) throw error;
+      throw translateSupabaseError(error);
+    }
   }
 
   function enqueue(payload) {
@@ -821,16 +835,20 @@ const DB = (() => {
       throw apiError('Sem internet. Salvo na fila offline para envio automático ao reconectar.', 'NETWORK_ERROR');
     }
 
-    return await executeSupabaseWrite(payload, activeSession);
+    try {
+      return await executeSupabaseWrite(payload, activeSession);
+    } catch (error) {
+      if (error.code === 'NETWORK_ERROR') {
+        enqueue(payload);
+      }
+      throw error;
+    }
   }
 
   async function syncQueue() {
     const queue = getQueue();
     const session = getSession();
     if (!queue.length || !session || !navigator.onLine) return 0;
-
-    const sb = await ensureSupabase();
-    if (!sb) return 0;
 
     const remaining = [];
     let sent = 0;
@@ -905,12 +923,7 @@ const DB = (() => {
     if (syncInFlight) return syncInFlight;
 
     syncInFlight = (async () => {
-      if (!navigator.onLine) {
-        return offlineSnapshot();
-      }
-
-      const sb = await ensureSupabase();
-      if (!sb) {
+      if (!navigator.onLine || !hasValidSupabaseConfig()) {
         return offlineSnapshot();
       }
 
@@ -919,25 +932,19 @@ const DB = (() => {
           await syncQueue().catch(() => 0);
         }
 
-        const [usersRes, resourcesRes, modelsRes, lotsRes, recordsRes] = await Promise.all([
-          sb.from('usuarios').select('*').order('nome'),
-          sb.from('recursos_turno').select('*').order('nome'),
-          sb.from('modelos').select('*').order('modelo_base'),
-          sb.from('lotes').select('*').eq('ativo', 'SIM').order('data_criacao'),
-          sb.from('apontamentos').select('*').order('data_hora', { ascending: false }).limit(800)
+        const [usersData, resourcesData, modelsData, lotsData, recordsData] = await Promise.all([
+          restRequest('usuarios?select=*&order=nome.asc'),
+          restRequest('recursos_turno?select=*&order=nome.asc'),
+          restRequest('modelos?select=*&order=modelo_base.asc'),
+          restRequest('lotes?select=*&ativo=eq.SIM&order=data_criacao.asc'),
+          restRequest('apontamentos?select=*&order=data_hora.desc&limit=800')
         ]);
 
-        if (usersRes.error) throw translateSupabaseError(usersRes.error);
-        if (resourcesRes.error) throw translateSupabaseError(resourcesRes.error);
-        if (modelsRes.error) throw translateSupabaseError(modelsRes.error);
-        if (lotsRes.error) throw translateSupabaseError(lotsRes.error);
-        if (recordsRes.error) throw translateSupabaseError(recordsRes.error);
-
-        const users = (usersRes.data || []).map(mapUserRow);
-        const resources = (resourcesRes.data || []).map(mapResourceRow);
-        const models = (modelsRes.data || []).map(mapModelRow);
-        const lots = (lotsRes.data || []).map(mapLotRow);
-        const records = (recordsRes.data || []).map(mapRecordRow);
+        const users = (usersData || []).map(mapUserRow);
+        const resources = (resourcesData || []).map(mapResourceRow);
+        const models = (modelsData || []).map(mapModelRow);
+        const lots = (lotsData || []).map(mapLotRow);
+        const records = (recordsData || []).map(mapRecordRow);
 
         localStorage.setItem(USER_CACHE_KEY, JSON.stringify(users));
         localStorage.setItem(RESOURCE_CACHE_KEY, JSON.stringify(resources));
@@ -975,7 +982,7 @@ const DB = (() => {
           lastRealtimeHandlers.onSnapshotUpdate(snapshot);
         }
       } catch (_) {}
-    }, 12000);
+    }, 8000);
   }
 
   function stopFallbackPolling() {
@@ -1006,13 +1013,13 @@ const DB = (() => {
   }
 
   async function subscribeRealtime(onSnapshotUpdate, onStatusChange) {
-    const sb = await ensureSupabase();
-    if (!sb) return;
     stopRealtime();
-
     lastRealtimeHandlers = { onSnapshotUpdate, onStatusChange };
     bindLifecycleListeners();
     startFallbackPolling();
+
+    const sb = getSupabase();
+    if (!sb) return;
 
     const triggerFastSync = () => {
       clearTimeout(realtimeDebounceTimer);
@@ -1026,24 +1033,28 @@ const DB = (() => {
       }, 150);
     };
 
-    realtimeChannel = sb
-      .channel(`byd-entrega-live-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'apontamentos' }, triggerFastSync)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'lotes' }, triggerFastSync)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'recursos_turno' }, triggerFastSync)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'usuarios' }, triggerFastSync)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'modelos' }, triggerFastSync)
-      .subscribe((status) => {
-        realtimeConnected = status === 'SUBSCRIBED';
-        if (realtimeConnected) {
-          stopFallbackPolling();
-        } else {
-          startFallbackPolling();
-        }
-        if (typeof lastRealtimeHandlers.onStatusChange === 'function') {
-          lastRealtimeHandlers.onStatusChange(status, realtimeConnected);
-        }
-      });
+    try {
+      realtimeChannel = sb
+        .channel(`byd-entrega-live-${Date.now()}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'apontamentos' }, triggerFastSync)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'lotes' }, triggerFastSync)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'recursos_turno' }, triggerFastSync)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'usuarios' }, triggerFastSync)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'modelos' }, triggerFastSync)
+        .subscribe((status) => {
+          realtimeConnected = status === 'SUBSCRIBED';
+          if (realtimeConnected) {
+            stopFallbackPolling();
+          } else {
+            startFallbackPolling();
+          }
+          if (typeof lastRealtimeHandlers.onStatusChange === 'function') {
+            lastRealtimeHandlers.onStatusChange(status, realtimeConnected);
+          }
+        });
+    } catch (_) {
+      startFallbackPolling();
+    }
   }
 
   function stopRealtime() {
