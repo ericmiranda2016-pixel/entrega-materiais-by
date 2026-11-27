@@ -203,10 +203,16 @@ const Cockpit = (() => {
   }
 
   function buildLotStats(catalog) {
-    const { targetShift } = getFilters();
+    const { targetDate, targetShift } = getFilters();
     const progressList = Array.isArray(latestContext.progressLots) ? latestContext.progressLots : [];
     const activeLots = Array.isArray(latestContext.activeLots) ? latestContext.activeLots : [];
     const validRecords = latestRecords.filter((r) => String(r.Status || '').toUpperCase() !== 'ESTORNADO');
+
+    const movedOnTargetDate = new Set(
+      validRecords
+        .filter((r) => !targetDate || normDate(r) === targetDate)
+        .map((r) => `${normModel(r.Modelo_Base)}|${String(r.Nome_Lote || '').trim().toLocaleLowerCase('pt-BR')}`)
+    );
 
     const map = new Map();
 
@@ -253,7 +259,15 @@ const Cockpit = (() => {
       });
     }
 
-    return [...map.values()].filter((lot) => targetShift === 'ALL' || !lot.shift || lot.shift === targetShift);
+    return [...map.values()].filter((lot) => {
+      if (targetShift !== 'ALL' && lot.shift && lot.shift !== targetShift) return false;
+      const sent = lot.items.reduce((s, c) => s + c.sent, 0);
+      const meta = lot.totalMeta || lot.items.reduce((s, c) => s + c.meta, 0);
+      const isDone = meta > 0 && sent >= meta;
+      if (!isDone) return true;
+      const key = `${lot.model}|${lot.name.toLocaleLowerCase('pt-BR')}`;
+      return movedOnTargetDate.has(key);
+    });
   }
 
   function computeMetrics(dayRecords, lots) {
