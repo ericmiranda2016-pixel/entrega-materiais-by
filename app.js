@@ -113,6 +113,7 @@
   if (!Array.isArray(lotProgress)) lotProgress = [];
   let records = DB.getCache();
   if (!Array.isArray(records)) records = [];
+  let shiftControls = DB.getCachedShiftControls();
   let tripItems = [];
   let lastSavedTrip = [];
   let adminUsers = [];
@@ -154,6 +155,18 @@
     return profile() === 'LIDER_TURNO';
   }
 
+  function isSupport() {
+    return profile() === 'SUPORTE_TURNO';
+  }
+
+  function canManageShiftLock() {
+    return isGeneralAdmin() || isLeader() || isSupport();
+  }
+
+  function canOpenCockpit() {
+    return isGeneralAdmin() || isLeader() || isSupport();
+  }
+
   function canOpenAdminViews() {
     return isGeneralAdmin() || isLeader();
   }
@@ -174,6 +187,153 @@
 
   function turnKey(value) {
     return String(value || '').replace(/^Turno\s+/i, '').trim().toUpperCase();
+  }
+
+  function getShiftControl(shift = currentShift()) {
+    const normalized = normalizeShiftLabel(shift);
+    if (normalized === 'Geral') {
+      return { Turno: 'Geral', Status: 'ABERTO', Atualizado_Por: '', Atualizado_Em: '' };
+    }
+    return shiftControls.find((item) => item.Turno === normalized) || {
+      Turno: normalized,
+      Status: 'ABERTO',
+      Atualizado_Por: '',
+      Atualizado_Em: ''
+    };
+  }
+
+  function isCurrentShiftClosedForOperator() {
+    if (profile() !== 'OPERADOR') return false;
+    return getShiftControl(currentShift()).Status === 'ENCERRADO';
+  }
+
+  function formatStatusTimestamp(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (v) => String(v).padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} às ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function renderShiftControlBar() {
+    const bar = el('shiftControlBar');
+    if (!bar || !session) return;
+
+    const shift = currentShift();
+    const canManage = canManageShiftLock();
+
+    if (shift === 'Geral') {
+      const summary = shiftControls
+        .map((c) => `${c.Turno}: ${c.Status === 'ENCERRADO' ? '🔒 ENCERRADO' : '🟢 ABERTO'}`)
+        .join(' · ');
+      bar.innerHTML = `
+        <div class="shift-control-card open">
+          <div>
+            <p class="shift-control-title">Status dos Turnos (Visão Geral)</p>
+            <p class="shift-control-sub">${escapeHtml(summary)} · Selecione um turno específico no topo para abrir ou encerrar.</p>
+          </div>
+        </div>`;
+      return;
+    }
+
+    const ctrl = getShiftControl(shift);
+    const isClosed = ctrl.Status === 'ENCERRADO';
+    const who = ctrl.Atualizado_Por ? ` por ${ctrl.Atualizado_Por}` : '';
+    const when = ctrl.Atualizado_Em ? ` (${formatStatusTimestamp(ctrl.Atualizado_Em)})` : '';
+
+    const title = isClosed
+      ? `🔒 ${shift} ENCERRADO${who}${when}`
+      : `🟢 ${shift} ABERTO${who}${when}`;
+
+    const subtitle = isClosed
+      ? (canManage
+        ? 'Lançamentos de operadores bloqueados. Você pode realizar correções ou reabrir o turno abaixo.'
+        : 'Lançamentos e criação de lotes bloqueados pela liderança. Procure o Líder ou Suporte do turno.')
+      : (canManage
+        ? 'Operação liberada. Ao finalizar o expediente, clique em Encerrar Turno para travar lançamentos dos operadores.'
+        : 'Turno liberado para criação de lotes e registro de viagens.');
+
+    const actionButton = canManage
+      ? (isClosed
+        ? `<button id="toggleShiftLockBtn" class="button button-success" type="button" data-next-status="ABERTO">🔓 Abrir Turno</button>`
+        : `<button id="toggleShiftLockBtn" class="button button-danger" type="button" data-next-status="ENCERRADO">🔒 Encerrar Turno</button>`)
+      : '';
+
+    bar.innerHTML = `
+      <div class="shift-control-card ${isClosed ? 'closed' : 'open'}">
+        <div style="flex:1;min-width:210px">
+          <p class="shift-control-title">${escapeHtml(title)}</p>
+          <p class="shift-control-sub">${escapeHtml(subtitle)}</p>
+        </div>
+        ${actionButton}
+      </div>`;
+
+    const btn = el('toggleShiftLockBtn');
+    if (btn) {
+      btn.addEventListener('click', () => toggleShiftLock(btn.dataset.nextStatus));
+    }
+  }
+
+  async function toggleShiftLock(nextStatus) {
+    if (!canManageShiftLock()) {
+      showToast('Apenas Liderança, Suporte ou Admin Geral podem alterar o status do turno.', 4500);
+      return;
+    }
+    const shift = currentShift();
+    if (shift === 'Geral') {
+      showToast('Selecione um turno específico (Turno A, B ou C) antes de abrir ou encerrar.');
+      return;
+    }
+    const confirmMsg = nextStatus === 'ENCERRADO'
+      ? `Confirma o ENCERRAMENTO do ${shift}?\n\nOs operadores ficarão bloqueados de criar lotes ou gravar novas viagens até que o turno seja aberto novamente.`
+      : `Confirma a ABERTURA do ${shift}?\n\nOs operadores voltarão a ter acesso livre para criar lotes e lançar viagens.`;
+
+    if (!window.confirm(confirmMsg)) return;
+
+    const btn = el('toggleShiftLockBtn');
+    if (btn) btn.disabled = true;
+
+    const payload = {
+      action: 'alterar_status_turno',
+      Turno: shift,
+      Status: nextStatus
+    };
+
+    try {
+      const result = await DB.sendOrQueue(payload);
+      if (Array.isArray(result.shiftControls)) {
+        shiftControls = result.shiftControls;
+      } else {
+        shiftControls = shiftControls.map((item) =>
+          item.Turno === shift
+            ? { ...item, Status: nextStatus, Atualizado_Por: currentOperator(), Atualizado_Em: new Date().toISOString() }
+            : item
+        );
+      }
+      refreshViews();
+      showToast(result.mensagem || (nextStatus === 'ENCERRADO' ? `${shift} encerrado!` : `${shift} aberto!`), 4500);
+    } catch (error) {
+      if (!goToLoginIfUnauthorized(error)) {
+        showToast(error.message || 'Não foi possível alterar o status do turno.', 5000);
+      }
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function applyShiftLockState() {
+    const locked = isCurrentShiftClosedForOperator();
+    if (el('newBatchButton')) el('newBatchButton').disabled = locked;
+    if (el('deleteBatchButton')) {
+      const hasOpenLots = activeLots.filter((lot) => !lotIsComplete(lot)).length > 0;
+      el('deleteBatchButton').disabled = locked || !hasOpenLots;
+    }
+    if (locked) {
+      if (el('addTripItemButton')) el('addTripItemButton').disabled = true;
+      if (el('saveRecordButton')) el('saveRecordButton').disabled = true;
+    } else if (el('saveRecordButton')) {
+      el('saveRecordButton').disabled = false;
+    }
   }
 
   function governanceForShift(shift = currentShift()) {
@@ -216,19 +376,27 @@
 
   function renderAccess() {
     const admin = canOpenAdminViews();
+    const cockpitAllowed = canOpenCockpit();
     document.querySelectorAll('.admin-only').forEach((item) => { item.hidden = !admin; });
+    document.querySelectorAll('.cockpit-only').forEach((item) => { item.hidden = !cockpitAllowed; });
     document.querySelectorAll('.admin-general-only').forEach((item) => { item.hidden = !isGeneralAdmin(); });
     document.querySelectorAll('.admin-general-only input, .admin-general-only select, .admin-general-only textarea, .admin-general-only button')
       .forEach((control) => { control.disabled = !isGeneralAdmin(); });
-    document.querySelectorAll('[data-view="cockpit"], [data-view="settings"]').forEach((item) => {
+    document.querySelectorAll('[data-view="cockpit"]').forEach((item) => {
+      item.setAttribute('aria-hidden', String(!cockpitAllowed));
+      item.tabIndex = cockpitAllowed ? 0 : -1;
+    });
+    document.querySelectorAll('[data-view="settings"]').forEach((item) => {
       item.setAttribute('aria-hidden', String(!admin));
       item.tabIndex = admin ? 0 : -1;
     });
-    el('navInner').style.gridTemplateColumns = admin ? 'repeat(3, minmax(0, 1fr))' : '1fr';
+    const visibleTabs = 1 + (cockpitAllowed ? 1 : 0) + (admin ? 1 : 0);
+    el('navInner').style.gridTemplateColumns = `repeat(${visibleTabs}, minmax(0, 1fr))`;
     renderSessionHeader();
     applyUserFormPermissions();
     applyResourceFormPermissions();
-    if (!admin && !el('operationView').classList.contains('active')) {
+    if ((!cockpitAllowed && el('cockpitView').classList.contains('active')) ||
+        (!admin && el('settingsView').classList.contains('active'))) {
       document.querySelectorAll('.screen').forEach((screen) => screen.classList.remove('active'));
       el('operationView').classList.add('active');
       document.querySelectorAll('.nav-button').forEach((button) =>
@@ -301,6 +469,7 @@
       showToast(error.message || 'Não foi possível sincronizar os dados.');
       records = DB.getCache();
       allResources = DB.getCachedResources();
+      shiftControls = DB.getCachedShiftControls();
       activeLots = readCachedLots();
       const cachedProgress = DB.getLotProgress();
       lotProgress = cachedProgress.length ? cachedProgress : deriveLocalProgress();
@@ -330,7 +499,7 @@
     }
     if (isLeader()) {
       return users.filter((user) =>
-        String(user.Perfil).toUpperCase() === 'OPERADOR' &&
+        ['OPERADOR', 'SUPORTE_TURNO'].includes(String(user.Perfil).toUpperCase()) &&
         turnKey(user.Turno_Vinculado) === turnKey(linkedShift())
       );
     }
@@ -426,6 +595,7 @@
     if (Array.isArray(snapshot.TB_Apontamentos)) records = snapshot.TB_Apontamentos;
     if (Array.isArray(snapshot.Cadastro_Recursos_Turno)) allResources = snapshot.Cadastro_Recursos_Turno;
     if (Array.isArray(snapshot.Cadastro_Modelos)) applyModels(snapshot.Cadastro_Modelos);
+    if (Array.isArray(snapshot.Controle_Turnos)) shiftControls = snapshot.Controle_Turnos;
     const hasAuthoritativeLots = !snapshot.offline && Array.isArray(snapshot.Cadastro_Lista_Lotes);
     if (Array.isArray(snapshot.Cadastro_Lista_Lotes)) {
       activeLots = mergeLotCollections(snapshot.Cadastro_Lista_Lotes, activeLots, hasAuthoritativeLots);
@@ -681,6 +851,7 @@
       localStorage.removeItem(SELECTED_LOT_KEY);
       if (deleteBtn) deleteBtn.disabled = true;
       renderSelectedLot();
+      applyShiftLockState();
       return;
     }
     select.replaceChildren(...lots.map((lot) => new Option(
@@ -690,8 +861,9 @@
     if (!lots.some((lot) => lot.id === selectedLotId)) selectedLotId = lots[lots.length - 1].id;
     select.value = selectedLotId;
     localStorage.setItem(SELECTED_LOT_KEY, selectedLotId);
-    if (deleteBtn) deleteBtn.disabled = false;
+    if (deleteBtn) deleteBtn.disabled = isCurrentShiftClosedForOperator();
     renderSelectedLot();
+    applyShiftLockState();
   }
 
   function lotProgressFor(lot) {
@@ -822,9 +994,10 @@
     const saldo = lot && component ? componentSaldo(lot, component) : 0;
     const warning = el('quantityWarning');
     const exceeds = quantity > saldo;
+    const locked = isCurrentShiftClosedForOperator();
     warning.textContent = exceeds ? `Quantidade excede o saldo pendente de ${saldo} paletes.` : '';
     warning.classList.toggle('visible', exceeds);
-    el('addTripItemButton').disabled = !lot || !component || quantity <= 0 || exceeds;
+    el('addTripItemButton').disabled = locked || !lot || !component || quantity <= 0 || exceeds;
   }
 
   function renderPendingLots() {
@@ -1148,10 +1321,12 @@
   }
 
   function refreshViews() {
+    renderShiftControlBar();
     renderHistory();
     renderSelectedLot();
     renderPendingLots();
     renderTripItems();
+    applyShiftLockState();
     updateSyncStatus();
     if (window.Cockpit && typeof Cockpit.update === 'function') {
       Cockpit.update(records, cockpitContext());
@@ -1204,6 +1379,9 @@
   }
 
   function addTripItem() {
+    if (isCurrentShiftClosedForOperator()) {
+      throw new Error('Turno encerrado pela liderança. Lançamentos bloqueados para operadores.');
+    }
     const lot = currentLot();
     const definition = lot && CATALOG[normalizeModelKey(lot.model)];
     const component = definition && definition.components.find((item) => item.name === selectedComponent);
@@ -1227,6 +1405,9 @@
   }
 
   function createTripPayload() {
+    if (isCurrentShiftClosedForOperator()) {
+      throw new Error('Turno encerrado pela liderança. Lançamentos bloqueados para operadores.');
+    }
     if (!tripItems.length) throw new Error('Adicione ao menos um material à viagem.');
     if (currentShift() === 'Geral') throw new Error('Selecione um turno específico antes de gravar a viagem.');
     const driver = el('driverInput').value.trim();
@@ -1340,6 +1521,10 @@
   }
 
   async function saveTrip() {
+    if (isCurrentShiftClosedForOperator()) {
+      showToast('Turno encerrado pela liderança. Lançamentos bloqueados para operadores.', 5000);
+      return;
+    }
     const button = el('saveRecordButton');
     button.disabled = true;
     try {
@@ -1348,6 +1533,10 @@
         await DB.sendOrQueue(payload);
         showToast('⚡ Viagem gravada e sincronizada em tempo real!');
       } catch (error) {
+        if (error.code === 'SHIFT_CLOSED') {
+          await silentSync();
+          throw error;
+        }
         if (!queued(payload)) {
           if (goToLoginIfUnauthorized(error)) return;
           throw error;
@@ -1367,7 +1556,7 @@
     } catch (error) {
       showToast(error.message || 'Não foi possível gravar a viagem.', 5000);
     } finally {
-      button.disabled = false;
+      button.disabled = isCurrentShiftClosedForOperator();
     }
   }
 
@@ -1656,7 +1845,7 @@
     const list = visibleUsers(source);
     adminUsers = list;
     status.textContent = isLeader()
-      ? `Mostrando ${list.length} operador(es) vinculados ao ${linkedShift()}.`
+      ? `Mostrando ${list.length} operador(es) e suporte(s) vinculados ao ${linkedShift()}.`
       : `Mostrando ${list.length} usuário(s) cadastrados.`;
     if (!list.length) {
       container.innerHTML = '<div class="empty-state">Nenhum funcionário encontrado para este filtro/turno.</div>';
@@ -1688,11 +1877,15 @@
     const role = el('newUserRole');
     const turn = el('newUserShift');
     if (isLeader()) {
-      role.value = 'OPERADOR';
+      [...role.options].forEach((opt) => {
+        opt.hidden = !['OPERADOR', 'SUPORTE_TURNO'].includes(opt.value);
+      });
+      if (!['OPERADOR', 'SUPORTE_TURNO'].includes(role.value)) role.value = 'OPERADOR';
+      role.disabled = false;
       turn.value = linkedShift();
-      role.disabled = true;
       turn.disabled = true;
     } else {
+      [...role.options].forEach((opt) => { opt.hidden = false; });
       role.disabled = !isGeneralAdmin();
       turn.disabled = !isGeneralAdmin();
     }
@@ -1832,13 +2025,16 @@
 
   async function createUser(event) {
     event.preventDefault();
+    const chosenRole = el('newUserRole').value;
     const payload = {
       action: 'salvar_usuario',
       Matricula_Original: el('userOriginalMatricula').value.trim(),
       Matricula: el('newUserMatricula').value.trim(),
       Nome: el('newUserName').value.trim(),
       PIN: el('newUserPin').value.trim(),
-      Perfil: isLeader() ? 'OPERADOR' : el('newUserRole').value,
+      Perfil: isLeader()
+        ? (['OPERADOR', 'SUPORTE_TURNO'].includes(chosenRole) ? chosenRole : 'OPERADOR')
+        : chosenRole,
       Turno_Vinculado: isLeader() ? linkedShift() : el('newUserShift').value,
       Ativo: el('newUserActive').value
     };
@@ -1855,13 +2051,12 @@
       alert('Matrícula já cadastrada para outro funcionário.');
       return;
     }
-    if (!['ADMIN_GERAL', 'LIDER_TURNO', 'OPERADOR'].includes(payload.Perfil)) {
+    if (!['ADMIN_GERAL', 'LIDER_TURNO', 'SUPORTE_TURNO', 'OPERADOR'].includes(payload.Perfil)) {
       showToast('Perfil inválido.');
       return;
     }
     if (payload.Perfil === 'ADMIN_GERAL') payload.Turno_Vinculado = 'TODOS';
     if (isLeader()) {
-      payload.Perfil = 'OPERADOR';
       payload.Turno_Vinculado = linkedShift();
     }
     await saveUser(payload);
@@ -2163,7 +2358,14 @@
       showLogin('Faça login para acessar o sistema.');
       return false;
     }
-    if (view !== 'operation' && !canOpenAdminViews()) {
+    if (view === 'cockpit' && !canOpenCockpit()) {
+      document.querySelectorAll('.screen').forEach((screen) => screen.classList.remove('active'));
+      el('operationView').classList.add('active');
+      document.querySelectorAll('.nav-button').forEach((button) => button.classList.toggle('active', button.dataset.view === 'operation'));
+      showToast('Acesso restrito a Liderança, Suporte ou Admin Geral.', 4500);
+      return false;
+    }
+    if (view === 'settings' && !canOpenAdminViews()) {
       document.querySelectorAll('.screen').forEach((screen) => screen.classList.remove('active'));
       el('operationView').classList.add('active');
       document.querySelectorAll('.nav-button').forEach((button) => button.classList.toggle('active', button.dataset.view === 'operation'));
@@ -2212,7 +2414,7 @@
       select.disabled = false;
       return;
     }
-    if (user && ['LIDER_TURNO', 'OPERADOR'].includes(String(user.Perfil).toUpperCase())) {
+    if (user && ['LIDER_TURNO', 'SUPORTE_TURNO', 'OPERADOR'].includes(String(user.Perfil).toUpperCase())) {
       select.value = user.Turno_Vinculado;
       select.disabled = true;
       return;
@@ -2223,6 +2425,10 @@
 
   async function createLot(event) {
     event.preventDefault();
+    if (isCurrentShiftClosedForOperator()) {
+      showToast('Turno encerrado pela liderança. Criação de lote bloqueada para operadores.', 5000);
+      return;
+    }
     const model = el('newLotModel').value;
     const name = el('newLotName').value.trim();
     if (currentShift() === 'Geral') {
@@ -2269,6 +2475,13 @@
     try {
       await DB.sendOrQueue(payload);
     } catch (error) {
+      if (error.code === 'SHIFT_CLOSED') {
+        activeLots = activeLots.filter((item) => item.id !== lot.id);
+        DB.removeLotFromLocal({ ID_Lote: lot.id, Nome_Lote: lot.name, Modelo_Base: lot.model });
+        await silentSync();
+        showToast(error.message, 5000);
+        return;
+      }
       if (!queued(payload)) {
         activeLots = activeLots.filter((item) => item.id !== lot.id);
         DB.removeLotFromLocal({ ID_Lote: lot.id, Nome_Lote: lot.name, Modelo_Base: lot.model });
@@ -2287,6 +2500,10 @@
   }
 
   async function deleteSelectedLot() {
+    if (isCurrentShiftClosedForOperator()) {
+      showToast('Turno encerrado pela liderança. Ação bloqueada para operadores.', 4500);
+      return;
+    }
     const lot = currentLot();
     if (!lot) {
       showToast('Selecione um lote para excluir.');
@@ -2351,11 +2568,18 @@
         await silentSync();
       }
     } finally {
-      if (button) button.disabled = activeLots.filter((item) => !lotIsComplete(item)).length === 0;
+      if (button) {
+        button.disabled = isCurrentShiftClosedForOperator() ||
+          activeLots.filter((item) => !lotIsComplete(item)).length === 0;
+      }
     }
   }
 
   function openNewLot() {
+    if (isCurrentShiftClosedForOperator()) {
+      showToast('Turno encerrado pela liderança. Criação de lote bloqueada para operadores.', 5000);
+      return;
+    }
     if (currentShift() === 'Geral') {
       showToast('Selecione um turno específico antes de abrir um lote.');
       return;
@@ -2513,7 +2737,7 @@
   async function restoreSession() {
     const saved = DB.getSession();
     const valid = saved && saved.Matricula && saved.Nome &&
-      ['OPERADOR', 'LIDER_TURNO', 'ADMIN_GERAL'].includes(saved.Perfil) &&
+      ['OPERADOR', 'SUPORTE_TURNO', 'LIDER_TURNO', 'ADMIN_GERAL'].includes(saved.Perfil) &&
       (saved.Perfil === 'ADMIN_GERAL'
         ? ['Turno A', 'Turno B', 'Turno C', 'Geral'].includes(saved.Turno)
         : ['Turno A', 'Turno B', 'Turno C'].includes(saved.Turno_Vinculado)) &&

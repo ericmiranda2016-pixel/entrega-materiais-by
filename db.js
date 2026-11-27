@@ -23,6 +23,15 @@ const DB = (() => {
   const LOCAL_LOTS_KEY = 'byd_lotes';
   const LEGACY_LOTS_KEY = 'byd_active_lots_v1';
   const LOT_PROGRESS_KEY = 'Progresso_Lotes';
+  const SHIFT_CONTROL_CACHE_KEY = 'Controle_Turnos';
+
+  const ALLOWED_ROLES = ['ADMIN_GERAL', 'LIDER_TURNO', 'SUPORTE_TURNO', 'OPERADOR'];
+
+  const FALLBACK_SHIFT_CONTROLS = [
+    { Turno: 'Turno A', Status: 'ABERTO', Atualizado_Por: 'Sistema', Atualizado_Em: '' },
+    { Turno: 'Turno B', Status: 'ABERTO', Atualizado_Por: 'Sistema', Atualizado_Em: '' },
+    { Turno: 'Turno C', Status: 'ABERTO', Atualizado_Por: 'Sistema', Atualizado_Em: '' }
+  ];
 
   const FALLBACK_USERS = [
     { Matricula: '9165', Nome: 'Eric Miranda', PIN: '9165', Perfil: 'ADMIN_GERAL', Turno_Vinculado: 'TODOS', Ativo: 'SIM' },
@@ -188,7 +197,7 @@ const DB = (() => {
 
   function isAuthorizationError(error) {
     return [
-      'AUTH_REQUIRED', 'FORBIDDEN', 'INVALID_CREDENTIALS', 'INVALID_INPUT',
+      'AUTH_REQUIRED', 'FORBIDDEN', 'SHIFT_CLOSED', 'INVALID_CREDENTIALS', 'INVALID_INPUT',
       'NOT_FOUND', 'INVALID_ACTION', 'DUPLICATE_MATRICULA', 'LAST_ADMIN', 'LOT_HAS_RECORDS', 'CONFIG_REQUIRED'
     ].includes(error.code);
   }
@@ -265,6 +274,39 @@ const DB = (() => {
       Motivo_Estorno: String(row.motivo_estorno || row.Motivo_Estorno || ''),
       Observacao_Auditoria: String(row.observacao_auditoria || row.Observacao_Auditoria || '')
     };
+  }
+
+  function mapShiftControlRow(row) {
+    const rawTurn = String(row.turno || row.Turno || '').trim();
+    const key = rawTurn.replace(/^Turno\s+/i, '').trim().toUpperCase();
+    const turno = ['A', 'B', 'C'].includes(key) ? `Turno ${key}` : (rawTurn || 'Turno B');
+    const status = String(row.status || row.Status || 'ABERTO').trim().toUpperCase();
+    return {
+      Turno: turno,
+      Status: status === 'ENCERRADO' ? 'ENCERRADO' : 'ABERTO',
+      Atualizado_Por: String(row.atualizado_por || row.Atualizado_Por || '').trim(),
+      Atualizado_Em: String(row.atualizado_em || row.Atualizado_Em || '').trim()
+    };
+  }
+
+  function mergeShiftControls(rows) {
+    const mapped = Array.isArray(rows) ? rows.map(mapShiftControlRow) : [];
+    return ['Turno A', 'Turno B', 'Turno C'].map((turnName) => {
+      const found = mapped.find((item) => item.Turno === turnName);
+      return found || { Turno: turnName, Status: 'ABERTO', Atualizado_Por: 'Sistema', Atualizado_Em: '' };
+    });
+  }
+
+  function getCachedShiftControls() {
+    const cached = readArray(SHIFT_CONTROL_CACHE_KEY, []);
+    return mergeShiftControls(cached.length ? cached : FALLBACK_SHIFT_CONTROLS);
+  }
+
+  function isShiftClosedForOperator(shiftName, controls = getCachedShiftControls()) {
+    const key = turnKey(shiftName);
+    if (!['A', 'B', 'C'].includes(key)) return false;
+    const found = controls.find((item) => turnKey(item.Turno) === key);
+    return Boolean(found && found.Status === 'ENCERRADO');
   }
 
   // =========================================================================
@@ -382,7 +424,7 @@ const DB = (() => {
   function authenticateLocal(matricula, pin, turno) {
     const local = getCachedUsers().find((u) => u.Matricula === matricula && u.PIN === pin && u.Ativo === 'SIM');
     if (!local) throw apiError('Matrícula, PIN ou status inválido.', 'INVALID_CREDENTIALS');
-    if (!['ADMIN_GERAL', 'LIDER_TURNO', 'OPERADOR'].includes(local.Perfil)) {
+    if (!ALLOWED_ROLES.includes(local.Perfil)) {
       throw apiError('Perfil sem permissão de acesso.', 'FORBIDDEN');
     }
     const selectedTurn = local.Perfil === 'ADMIN_GERAL' ? turno : local.Turno_Vinculado;
@@ -432,7 +474,7 @@ const DB = (() => {
       if (user.PIN !== pin || user.Ativo !== 'SIM') {
         throw apiError('Matrícula, PIN ou status inválido.', 'INVALID_CREDENTIALS');
       }
-      if (!['ADMIN_GERAL', 'LIDER_TURNO', 'OPERADOR'].includes(user.Perfil)) {
+      if (!ALLOWED_ROLES.includes(user.Perfil)) {
         throw apiError('Perfil sem permissão de acesso.', 'FORBIDDEN');
       }
       const selectedTurn = user.Perfil === 'ADMIN_GERAL' ? turno : user.Turno_Vinculado;
@@ -539,6 +581,25 @@ const DB = (() => {
     return 'Turno B';
   }
 
+  async function assertShiftOpenForOperator(session, targetShift, checkRemote = true) {
+    if (String(session.Perfil || '').toUpperCase() !== 'OPERADOR') return;
+    const shiftToCheck = normalizeShiftForSql(targetShift || session.Turno || session.Turno_Vinculado);
+    let controls = getCachedShiftControls();
+    if (checkRemote && navigator.onLine && hasValidSupabaseConfig()) {
+      try {
+        const remote = await restRequest('controle_turnos?select=*');
+        controls = mergeShiftControls(remote);
+        localStorage.setItem(SHIFT_CONTROL_CACHE_KEY, JSON.stringify(controls));
+      } catch (_) {}
+    }
+    if (isShiftClosedForOperator(shiftToCheck, controls)) {
+      throw apiError(
+        `${shiftToCheck} encerrado pela liderança. Lançamentos bloqueados para operadores.`,
+        'SHIFT_CLOSED'
+      );
+    }
+  }
+
   async function executeSupabaseWrite(payload, session) {
     if (!hasValidSupabaseConfig()) {
       throw apiError('Configuração do Supabase ausente.', 'CONFIG_REQUIRED');
@@ -547,6 +608,7 @@ const DB = (() => {
     const role = String(session.Perfil || '').toUpperCase();
     const isAdmin = role === 'ADMIN_GERAL';
     const isLeader = role === 'LIDER_TURNO';
+    const isSupport = role === 'SUPORTE_TURNO';
 
     try {
       if (payload.action === 'test_connection') {
@@ -560,8 +622,52 @@ const DB = (() => {
         };
       }
 
+      if (payload.action === 'alterar_status_turno') {
+        assertPermission(
+          session,
+          () => isAdmin || isLeader || isSupport,
+          'Apenas Liderança, Suporte ou Admin Geral podem abrir ou encerrar turnos.'
+        );
+        const targetTurn = normalizeShiftForSql(payload.Turno || session.Turno);
+        const nextStatus = String(payload.Status || '').trim().toUpperCase();
+        if (!['ABERTO', 'ENCERRADO'].includes(nextStatus)) {
+          throw apiError('Status de turno inválido.', 'INVALID_INPUT');
+        }
+        if ((isLeader || isSupport) && turnKey(targetTurn) !== turnKey(session.Turno_Vinculado)) {
+          throw apiError('Você só pode abrir ou encerrar o seu próprio turno.', 'FORBIDDEN');
+        }
+
+        const nowIso = new Date().toISOString();
+        const actor = `${session.Nome} (${session.Matricula})`;
+        await restRequest('controle_turnos?on_conflict=turno', {
+          method: 'POST',
+          headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+          body: {
+            turno: targetTurn,
+            status: nextStatus,
+            atualizado_por: actor,
+            atualizado_em: nowIso
+          }
+        });
+
+        const allControls = await restRequest('controle_turnos?select=*&order=turno.asc');
+        const mergedControls = mergeShiftControls(allControls);
+        localStorage.setItem(SHIFT_CONTROL_CACHE_KEY, JSON.stringify(mergedControls));
+
+        return {
+          ok: true,
+          mensagem: nextStatus === 'ENCERRADO'
+            ? `🔒 ${targetTurn} encerrado! Operadores bloqueados.`
+            : `🔓 ${targetTurn} aberto! Operadores liberados.`,
+          shiftControls: mergedControls
+        };
+      }
+
       if (['criar_viagem', 'criar_apontamento'].includes(payload.action)) {
         const sourceItems = Array.isArray(payload.itens) ? payload.itens : [payload];
+        const firstTurn = sourceItems[0]?.Turno || session.Turno;
+        await assertShiftOpenForOperator(session, firstTurn, true);
+
         const rows = sourceItems.map((item) => ({
           id_apontamento: String(item.ID_Apontamento),
           id_viagem: String(item.ID_Viagem || payload.ID_Viagem || ''),
@@ -623,6 +729,7 @@ const DB = (() => {
       }
 
       if (['salvar_lote', 'criar_lote'].includes(payload.action)) {
+        await assertShiftOpenForOperator(session, payload.Turno_Vinculado || session.Turno, true);
         const row = {
           id_lote: String(payload.ID_Lote),
           nome_lote: String(payload.Nome_Lote).trim(),
@@ -641,6 +748,7 @@ const DB = (() => {
       }
 
       if (['excluir_lote', 'deletar_lote'].includes(payload.action)) {
+        await assertShiftOpenForOperator(session, session.Turno, true);
         const query = payload.ID_Lote
           ? `lotes?id_lote=eq.${encodeURIComponent(String(payload.ID_Lote))}`
           : `lotes?nome_lote=eq.${encodeURIComponent(String(payload.Nome_Lote))}&modelo_base=eq.${encodeURIComponent(String(payload.Modelo_Base))}`;
@@ -682,9 +790,13 @@ const DB = (() => {
         const targetTurno = targetPerfil === 'ADMIN_GERAL' ? 'TODOS' : normalizeShiftForSql(payload.Turno_Vinculado);
         const targetAtivo = String(payload.Ativo || 'SIM').toUpperCase();
 
+        if (!ALLOWED_ROLES.includes(targetPerfil)) {
+          throw apiError('Perfil de acesso inválido.', 'INVALID_INPUT');
+        }
+
         if (isLeader) {
-          if (targetPerfil !== 'OPERADOR' || turnKey(targetTurno) !== turnKey(session.Turno_Vinculado)) {
-            throw apiError('Líder de turno só pode cadastrar ou editar OPERADOR do seu próprio turno.', 'FORBIDDEN');
+          if (!['OPERADOR', 'SUPORTE_TURNO'].includes(targetPerfil) || turnKey(targetTurno) !== turnKey(session.Turno_Vinculado)) {
+            throw apiError('Líder de turno só pode cadastrar ou editar OPERADOR ou SUPORTE_TURNO do seu próprio turno.', 'FORBIDDEN');
           }
         }
 
@@ -830,6 +942,11 @@ const DB = (() => {
     const activeSession = getSession();
     if (!activeSession) throw apiError('Faça login para continuar.', 'AUTH_REQUIRED');
 
+    if (['criar_viagem', 'criar_apontamento', 'salvar_lote', 'criar_lote', 'excluir_lote', 'deletar_lote'].includes(payload.action)) {
+      const targetTurn = payload.Turno_Vinculado || (Array.isArray(payload.itens) && payload.itens[0]?.Turno) || activeSession.Turno;
+      await assertShiftOpenForOperator(activeSession, targetTurn, false);
+    }
+
     if (!navigator.onLine) {
       enqueue(payload);
       throw apiError('Sem internet. Salvo na fila offline para envio automático ao reconectar.', 'NETWORK_ERROR');
@@ -858,7 +975,7 @@ const DB = (() => {
         await executeSupabaseWrite(payload, session);
         sent++;
       } catch (error) {
-        if (['INVALID_ACTION', 'NOT_FOUND', 'INVALID_INPUT', 'DUPLICATE_MATRICULA'].includes(error.code)) {
+        if (['INVALID_ACTION', 'NOT_FOUND', 'INVALID_INPUT', 'DUPLICATE_MATRICULA', 'SHIFT_CLOSED'].includes(error.code)) {
           continue;
         }
         if (isAuthorizationError(error)) {
@@ -915,6 +1032,7 @@ const DB = (() => {
       Cadastro_Lista_Lotes: readArray(LOT_CACHE_KEY, []),
       Progresso_Lotes: readArray(LOT_PROGRESS_KEY, []),
       TB_Apontamentos: getCache(),
+      Controle_Turnos: getCachedShiftControls(),
       offline: true
     };
   }
@@ -928,6 +1046,13 @@ const DB = (() => {
       }
 
       try {
+        const shiftControlsPromise = restRequest('controle_turnos?select=*&order=turno.asc').catch(() => null);
+        const shiftControlsRaw = await shiftControlsPromise;
+        const shiftControls = shiftControlsRaw
+          ? mergeShiftControls(shiftControlsRaw)
+          : getCachedShiftControls();
+        localStorage.setItem(SHIFT_CONTROL_CACHE_KEY, JSON.stringify(shiftControls));
+
         if (getQueue().length) {
           await syncQueue().catch(() => 0);
         }
@@ -959,6 +1084,7 @@ const DB = (() => {
           Cadastro_Modelos: models,
           Cadastro_Lista_Lotes: lots,
           TB_Apontamentos: records,
+          Controle_Turnos: shiftControls,
           offline: false
         };
       } catch (err) {
@@ -1036,6 +1162,7 @@ const DB = (() => {
     try {
       realtimeChannel = sb
         .channel(`byd-entrega-live-${Date.now()}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'controle_turnos' }, triggerFastSync)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'apontamentos' }, triggerFastSync)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'lotes' }, triggerFastSync)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'recursos_turno' }, triggerFastSync)
@@ -1101,6 +1228,8 @@ const DB = (() => {
     testConnection,
     getCachedUsers,
     getCachedResources,
+    getCachedShiftControls,
+    isShiftClosedForOperator,
     sincronizarLeitura,
     subscribeRealtime,
     stopRealtime,
