@@ -398,12 +398,12 @@ const Cockpit = (() => {
     ctx.font = `800 18px ${font}`;
     ctx.fillText('RELATÓRIO DIÁRIO DE EXPEDIÇÃO / 每日发运报告', W / 2, 142);
 
-    // 5 Cards brancos de Metadados
+    // 5 Cards brancos de Metadados (Bilíngue PT / ZH)
     const metaCards = [
       { label: 'DATA / 日期', value: formatShortDate(m.targetDate) },
-      { label: 'COORDENADOR', value: m.coordinator },
-      { label: 'LIDERANÇA', value: m.leadership },
-      { label: 'RESPONSÁVEL', value: m.responsible },
+      { label: 'COORDENADOR / 协调员', value: m.coordinator },
+      { label: 'LIDERANÇA / 班长', value: m.leadership },
+      { label: 'RESPONSÁVEL / 负责人', value: m.responsible },
       { label: 'TURNO / 班次', value: m.shiftDisplay }
     ];
     const gap = 16;
@@ -838,7 +838,7 @@ const Cockpit = (() => {
     const text = [
       '📊 COCKPIT LOGÍSTICO · ENTREGA DE MATERIAIS (物料配送看板)',
       `📅 Data (日期): ${formatBrDate(targetDate)} | 🕒 Turno (班次): ${shiftLabel}`,
-      `👔 Coordenador (协调员): ${coordinator} | Líder (组长): ${leadership}`,
+      `👔 Coordenador (协调员): ${coordinator} | Liderança (班长): ${leadership}`,
       `👷 Responsável (负责人): ${responsible}`,
       '',
       `📦 Movimentação do Dia (当日配送总量): ${totalPallets} paletes (托盘) | ${totalTrips} viagens (车次)`,
