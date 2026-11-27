@@ -9,6 +9,13 @@
     PBP: { total: 387, components: [{ name: 'Aramados altos e baixos', meta: 60 }, { name: 'Caixarias', meta: 87 }, { name: 'Jantes', meta: 240 }] }
   };
 
+  const DEFAULT_GOVERNANCE_SHIFTS = {
+    'Turno A': { coordinator: '', leadership: '' },
+    'Turno B': { coordinator: 'Anderson Andrade', leadership: 'Daniela Menezes' },
+    'Turno C': { coordinator: '', leadership: '' },
+    Geral: { coordinator: 'Anderson Andrade', leadership: 'Daniela Menezes' }
+  };
+
   const LOTS_KEY = 'byd_active_lots_v1';
   const LOCAL_LOTS_KEY = 'byd_lotes';
   const UI_CONFIG_KEY = 'byd_ui_governance_v1';
@@ -21,6 +28,19 @@
     try { return JSON.parse(localStorage.getItem(key) || 'null') || fallback; }
     catch (_) { return fallback; }
   };
+
+  function cloneDefaultGovernance() {
+    return Object.fromEntries(
+      Object.entries(DEFAULT_GOVERNANCE_SHIFTS).map(([shift, data]) => [shift, { ...data }])
+    );
+  }
+
+  function normalizeShiftLabel(value) {
+    const raw = String(value || '').trim();
+    if (!raw || /^geral$/i.test(raw) || /^todos$/i.test(raw)) return 'Geral';
+    const match = raw.match(/([ABC])$/i);
+    return match ? `Turno ${match[1].toUpperCase()}` : 'Turno B';
+  }
 
   function normalizeLotRow(lot) {
     const source = lot || {};
@@ -79,8 +99,7 @@
 
   let CATALOG = cloneCatalog(DEFAULT_CATALOG);
   let uiConfig = {
-    coordinator: 'Anderson Andrade',
-    leadership: 'Daniela Menezes'
+    shifts: cloneDefaultGovernance()
   };
   let session = null;
   let SESSAO = null;
@@ -155,6 +174,16 @@
 
   function turnKey(value) {
     return String(value || '').replace(/^Turno\s+/i, '').trim().toUpperCase();
+  }
+
+  function governanceForShift(shift = currentShift()) {
+    const key = normalizeShiftLabel(shift);
+    const shifts = (uiConfig && uiConfig.shifts) || cloneDefaultGovernance();
+    const entry = shifts[key] || { coordinator: '', leadership: '' };
+    return {
+      coordinator: String(entry.coordinator || '').trim(),
+      leadership: String(entry.leadership || '').trim()
+    };
   }
 
   function loginError(message) {
@@ -1105,12 +1134,13 @@
   }
 
   function cockpitContext() {
+    const gov = governanceForShift(currentShift());
     return {
       operator: currentOperator(),
       shift: currentShift(),
       profile: profile(),
-      coordinator: uiConfig.coordinator,
-      leadership: uiConfig.leadership,
+      coordinator: gov.coordinator,
+      leadership: gov.leadership,
       activeLots,
       progressLots: lotProgress,
       models: modelList()
@@ -1367,12 +1397,28 @@
   }
 
   function loadGovernanceConfig() {
-    const defaults = {
-      coordinator: 'Anderson Andrade',
-      leadership: 'Daniela Menezes'
-    };
-    const globalConfig = safeJson(UI_CONFIG_KEY, {});
-    uiConfig = { ...defaults, ...globalConfig };
+    const defaults = cloneDefaultGovernance();
+    const stored = safeJson(UI_CONFIG_KEY, {});
+    const shifts = cloneDefaultGovernance();
+
+    if (stored && typeof stored.shifts === 'object' && stored.shifts !== null) {
+      Object.keys(shifts).forEach((shiftKey) => {
+        if (stored.shifts[shiftKey]) {
+          shifts[shiftKey] = {
+            coordinator: String(stored.shifts[shiftKey].coordinator ?? defaults[shiftKey].coordinator),
+            leadership: String(stored.shifts[shiftKey].leadership ?? defaults[shiftKey].leadership)
+          };
+        }
+      });
+    } else if (stored && (stored.coordinator || stored.leadership)) {
+      shifts['Turno B'] = {
+        coordinator: String(stored.coordinator || defaults['Turno B'].coordinator),
+        leadership: String(stored.leadership || defaults['Turno B'].leadership)
+      };
+      shifts.Geral = { ...shifts['Turno B'] };
+    }
+
+    uiConfig = { shifts };
   }
 
   function persistUiConfig() {
@@ -1380,16 +1426,53 @@
       const current = safeJson(UI_CONFIG_KEY, {});
       localStorage.setItem(UI_CONFIG_KEY, JSON.stringify({
         ...current,
-        coordinator: uiConfig.coordinator,
-        leadership: uiConfig.leadership
+        shifts: uiConfig.shifts
       }));
     }
   }
 
-  function fillGovernanceForm() {
+  function ensureGovernanceShiftSelector() {
+    let shiftSelect = el('governanceShiftSelect');
+    if (shiftSelect) return shiftSelect;
+
+    const coordInput = el('settingsCoordinator');
+    const coordLabel = coordInput ? coordInput.closest('label') : null;
+    if (!coordLabel || !coordLabel.parentNode) return null;
+
+    const wrapper = document.createElement('label');
+    wrapper.innerHTML = `
+      <span class="field-label">Turno da Liderança</span>
+      <select id="governanceShiftSelect" class="control">
+        <option value="Turno A">Turno A</option>
+        <option value="Turno B">Turno B</option>
+        <option value="Turno C">Turno C</option>
+        <option value="Geral">Geral (Visão Consolidada)</option>
+      </select>`;
+    coordLabel.parentNode.insertBefore(wrapper, coordLabel);
+
+    shiftSelect = el('governanceShiftSelect');
+    shiftSelect.addEventListener('change', () => {
+      const selected = normalizeShiftLabel(shiftSelect.value);
+      const gov = governanceForShift(selected);
+      el('settingsCoordinator').value = gov.coordinator;
+      el('settingsLeadership').value = gov.leadership;
+    });
+    return shiftSelect;
+  }
+
+  function fillGovernanceForm(targetShift = null) {
     el('settingsApiUrl').value = DB.getApiUrl();
-    el('settingsCoordinator').value = uiConfig.coordinator;
-    el('settingsLeadership').value = uiConfig.leadership;
+    const shiftSelect = ensureGovernanceShiftSelector();
+    const activeShiftKey = normalizeShiftLabel(
+      targetShift || (shiftSelect && shiftSelect.value) || currentShift()
+    );
+    if (shiftSelect) {
+      shiftSelect.value = activeShiftKey;
+      shiftSelect.disabled = !isGeneralAdmin();
+    }
+    const gov = governanceForShift(activeShiftKey);
+    el('settingsCoordinator').value = gov.coordinator;
+    el('settingsLeadership').value = gov.leadership;
   }
 
   async function testConnection() {
@@ -1414,9 +1497,16 @@
     if (!isGeneralAdmin()) return;
     const currentUrl = DB.getApiUrl();
     const requestedUrl = el('settingsApiUrl').value.trim();
-    uiConfig.coordinator = el('settingsCoordinator').value.trim();
-    uiConfig.leadership = el('settingsLeadership').value.trim();
+    const shiftSelect = ensureGovernanceShiftSelector();
+    const targetShift = normalizeShiftLabel(shiftSelect ? shiftSelect.value : currentShift());
+
+    if (!uiConfig.shifts) uiConfig.shifts = cloneDefaultGovernance();
+    uiConfig.shifts[targetShift] = {
+      coordinator: el('settingsCoordinator').value.trim(),
+      leadership: el('settingsLeadership').value.trim()
+    };
     persistUiConfig();
+
     if (requestedUrl !== currentUrl) {
       try {
         DB.setApiUrl(requestedUrl);
@@ -1424,9 +1514,11 @@
         showToast(error.message, 5000);
         return;
       }
-      showToast(requestedUrl ? 'URL do espelho Google Sheets atualizada.' : 'Espelho Google Sheets removido.');
+      showToast(requestedUrl
+        ? `Governança do ${targetShift} e URL atualizadas.`
+        : `Governança do ${targetShift} salva e espelho removido.`);
     } else {
-      showToast('Governança salva com sucesso.');
+      showToast(`Liderança do ${targetShift} salva com sucesso.`);
     }
     refreshViews();
   }
@@ -2088,6 +2180,7 @@
     }
     if (view === 'settings') {
       renderAccess();
+      fillGovernanceForm();
       renderUsers();
       renderResources();
     }
@@ -2102,6 +2195,7 @@
     SESSAO = session;
     localStorage.setItem('byd_shift', turn);
     renderAccess();
+    fillGovernanceForm(turn);
     renderOperationResources();
     renderLots();
     refreshViews();
@@ -2435,6 +2529,7 @@
   }
 
   function initialize() {
+    loadGovernanceConfig();
     attachEvents();
     Object.keys(CATALOG).forEach((model) => el('newLotModel').add(new Option(model, model)));
     renderOperationResources();
